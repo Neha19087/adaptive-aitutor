@@ -7,6 +7,166 @@ import os
 from groq import Groq
 from sentence_transformers import SentenceTransformer
 
+st.set_page_config(
+    page_title="Adaptive AI Tutor",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+
+st.markdown("""
+<style>
+    /* Main page */
+    .stApp {
+        background-color: #F6F8FC;
+        color: #1E293B;
+    }
+
+    /* Default text */
+    .stApp,
+    .stApp p,
+    .stApp label,
+    .stApp span,
+    .stApp li,
+    .stApp div {
+        color: #1E293B;
+    }
+
+    /* Headings */
+    h1, h2, h3, h4 {
+        color: #172554 !important;
+    }
+
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: #172554;
+    }
+
+    [data-testid="stSidebar"] * {
+        color: #F8FAFC !important;
+    }
+
+    /* Metric cards */
+    [data-testid="stMetric"] {
+        background-color: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 14px;
+        padding: 18px;
+    }
+
+    [data-testid="stMetric"] label {
+        color: #475569 !important;
+    }
+
+    [data-testid="stMetricValue"] {
+        color: #172554 !important;
+    }
+
+    /* Inputs */
+    .stTextInput input,
+    .stTextArea textarea {
+        background-color: #FFFFFF !important;
+        color: #1E293B !important;
+        border: 1px solid #CBD5E1;
+    }
+
+    /* Select boxes */
+    [data-testid="stSelectbox"] div[data-baseweb="select"] {
+        background-color: #FFFFFF;
+    }
+
+    /* Buttons */
+    .stButton > button,
+    .stFormSubmitButton > button {
+        background-color: #4F46E5;
+        color: #FFFFFF !important;
+        border: none;
+        border-radius: 10px;
+        font-weight: 600;
+        min-height: 42px;
+    }
+
+    .stButton > button:hover,
+    .stFormSubmitButton > button:hover {
+        background-color: #4338CA;
+        color: #FFFFFF !important;
+    }
+
+    /* Expanders */
+    [data-testid="stExpander"] {
+        background-color: #FFFFFF;
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+    }
+
+    /* Content spacing */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+        max-width: 1250px;
+    }
+
+    
+    /* Fix PDF upload box */
+    [data-testid="stFileUploader"] {
+        background-color: #FFFFFF !important;
+        border: 1px solid #CBD5E1 !important;
+        border-radius: 14px !important;
+        padding: 16px !important;
+    }
+
+    [data-testid="stFileUploader"] section {
+        background-color: #FFFFFF !important;
+        border: 1px dashed #94A3B8 !important;
+        border-radius: 10px !important;
+    }
+
+    [data-testid="stFileUploader"] section,
+    [data-testid="stFileUploader"] section * {
+        color: #1E293B !important;
+    }
+
+    [data-testid="stFileUploader"] button {
+        background-color: #4F46E5 !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        border-radius: 8px !important;
+    }
+
+    [data-testid="stFileUploader"] small {
+        color: #64748B !important;
+    }
+    
+.dashboard-hero {
+    background: linear-gradient(120deg, #172554, #4338CA);
+    padding: 32px;
+    border-radius: 18px;
+    margin-bottom: 24px;
+}
+
+.dashboard-hero .hero-label {
+    color: #C7D2FE !important;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 2px;
+}
+
+.dashboard-hero h1 {
+    color: #FFFFFF !important;
+    font-size: 30px;
+}
+
+.dashboard-hero p {
+    color: #E0E7FF !important;
+    line-height: 1.7;
+}
+
+
+</style>
+""", unsafe_allow_html=True)
+
+
 def get_weak_topics(learner_model):
     weak_topics = []
 
@@ -58,14 +218,63 @@ if "learner_model" not in st.session_state:
     st.session_state["learner_model"] = {}
 
 
-st.set_page_config(
-    page_title="Adaptive AI Tutor",
-    page_icon="📚",
-    layout="wide"
+
+
+# Dashboard header
+st.markdown("""
+# 📚 Adaptive AI Tutor
+
+### Your personal AI-powered learning workspace
+
+Upload your notes, understand difficult concepts,
+practise with quizzes, and track your learning progress.
+""")
+
+st.divider()
+
+# Get existing application data
+learner = st.session_state["learner_model"]
+chunks = st.session_state.get("chunks", [])
+hierarchy = st.session_state.get("topic_hierarchy", [])
+
+total_questions = sum(
+    data["attempts"] for data in learner.values()
 )
 
-st.title("📚 Adaptive AI Tutor")
-st.write("Upload notes and search them using natural language.")
+total_correct = sum(
+    data["correct"] for data in learner.values()
+)
+
+accuracy = (
+    100 * total_correct / total_questions
+    if total_questions > 0 else 0
+)
+
+weak_count = len(get_weak_topics(learner))
+
+# Dashboard metric cards
+st.subheader("Your Learning Overview")
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric("📄 Study Chunks", len(chunks))
+
+with col2:
+    st.metric("📚 Major Topics", len(hierarchy))
+
+with col3:
+    st.metric("🎯 Questions Attempted", total_questions)
+
+with col4:
+    st.metric("📈 Accuracy", f"{accuracy:.0f}%")
+
+st.caption(
+    f"You currently have {weak_count} topic(s) "
+    "that may need additional practice."
+)
+
+st.divider()
 
 
 @st.cache_resource
@@ -612,595 +821,688 @@ state that limitation clearly.
 
     return response.choices[0].message.content
 
-uploaded_file = st.file_uploader(
-    "Upload a PDF",
-    type=["pdf"]
+# SIDEBAR NAVIGATION
+st.sidebar.title("📚 Adaptive AI Tutor")
+st.sidebar.caption("Your personal learning workspace")
+st.sidebar.divider()
+
+page = st.sidebar.radio(
+    "NAVIGATION",
+    [
+        "Dashboard",
+        "Study Material & AI Tutor",
+        "Practice Quiz",
+        "My Progress",
+        "Topic Map",
+    ],
+    key="main_navigation",
 )
 
-if uploaded_file is not None:
+st.sidebar.divider()
+st.sidebar.caption("Learn • Practise • Improve")
 
-    if st.button("Build searchable knowledge base"):
 
-        with st.spinner("Reading PDF and creating embeddings..."):
+# DASHBOARD PAGE
+if page == "Dashboard":
+    st.markdown("""
+    <div class="dashboard-hero">
+        <div class="hero-label">YOUR PERSONAL LEARNING SPACE</div>
+        <h1>Welcome to your learning dashboard 👋</h1>
+        <p>
+            Practise smarter, track your progress, and focus
+            on the topics that need your attention.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-            chunks = create_chunks(uploaded_file.getvalue())
+    learner = st.session_state["learner_model"]
+    chunks = st.session_state.get("chunks", [])
+    hierarchy = st.session_state.get("topic_hierarchy", [])
 
-            if not chunks:
-                st.error(
-                    "No selectable text found in this PDF."
+    attempts = sum(x["attempts"] for x in learner.values())
+    correct = sum(x["correct"] for x in learner.values())
+    incorrect = attempts - correct
+
+    accuracy = 100 * correct / attempts if attempts else 0
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Study Chunks", len(chunks))
+    col2.metric("Major Topics", len(hierarchy))
+    col3.metric("Questions Attempted", attempts)
+    col4.metric("Quiz Accuracy", f"{accuracy:.1f}%")
+
+    st.subheader("Quiz Performance")
+    if attempts:
+        st.bar_chart({
+            "Correct": [correct],
+            "Incorrect": [incorrect],
+        })
+    else:
+        st.info("Complete a quiz to see your performance.")
+
+    st.subheader("Topic Mastery")
+    if learner:
+        mastery = {
+            topic: round(
+                (data["correct"] + 1) /
+                (data["attempts"] + 2) * 100,
+                1,
+            )
+            for topic, data in learner.items()
+        }
+        st.bar_chart(mastery)
+    else:
+        st.info("Complete a quiz to see topic mastery.")
+
+    weak_topics = get_weak_topics(learner)
+    st.subheader("Topics to Revise")
+    if weak_topics:
+        for topic in weak_topics:
+            st.warning(topic)
+    else:
+        st.info("No weak topics are currently recorded.")
+
+
+if page == "Study Material & AI Tutor":
+    st.subheader("📂 Your Study Material")
+    st.write(
+        "Start by uploading a PDF containing your notes "
+        "or course material."
+    )
+
+    uploaded_file = st.file_uploader(
+        "Choose your study material",
+        type=["pdf"],
+        help="Upload a PDF with selectable text."
+    )
+
+
+    if uploaded_file is not None:
+
+        if st.button("Build searchable knowledge base"):
+
+            with st.spinner("Reading PDF and creating embeddings..."):
+
+                chunks = create_chunks(uploaded_file.getvalue())
+
+                if not chunks:
+                    st.error(
+                        "No selectable text found in this PDF."
+                    )
+                    st.stop()
+
+                
+                with st.spinner("Discovering major topics and subtopics..."):
+                    topic_hierarchy = discover_topic_hierarchy(chunks)
+
+                with st.spinner("Tagging each content chunk..."):
+                    chunks = tag_content_chunks(chunks, topic_hierarchy)
+
+                st.session_state["topic_hierarchy"] = topic_hierarchy
+                st.session_state["chunks"] = chunks
+
+                st.success(
+                    f"Topic discovery complete! "
+                    f"Tagged {len(chunks)} content chunks."
                 )
-                st.stop()
 
-            
-            with st.spinner("Discovering major topics and subtopics..."):
-                topic_hierarchy = discover_topic_hierarchy(chunks)
 
-            with st.spinner("Tagging each content chunk..."):
-                chunks = tag_content_chunks(chunks, topic_hierarchy)
+                model = load_embedding_model()
 
-            st.session_state["topic_hierarchy"] = topic_hierarchy
-            st.session_state["chunks"] = chunks
+                texts = [chunk["text"] for chunk in chunks]
+
+                embeddings = model.encode(
+                    texts,
+                    normalize_embeddings=True,
+                    convert_to_numpy=True
+                )
+
+                embeddings = np.asarray(
+                    embeddings,
+                    dtype="float32"
+                )
+
+                # Inner product on normalized vectors
+                # is equivalent to cosine similarity.
+                index = faiss.IndexFlatIP(
+                    embeddings.shape[1]
+                )
+
+                index.add(embeddings)
+
+                st.session_state["chunks"] = chunks
+                st.session_state["index"] = index
 
             st.success(
-                f"Topic discovery complete! "
-                f"Tagged {len(chunks)} content chunks."
+                f"Knowledge base ready: {len(chunks)} chunks."
             )
 
+        if "index" in st.session_state:
 
-            model = load_embedding_model()
-
-            texts = [chunk["text"] for chunk in chunks]
-
-            embeddings = model.encode(
-                texts,
-                normalize_embeddings=True,
-                convert_to_numpy=True
+            question = st.text_input(
+                "Ask a question about your notes",
+                placeholder="What is the main idea of this document?"
             )
 
-            embeddings = np.asarray(
-                embeddings,
-                dtype="float32"
-            )
+            if st.button("Find relevant passages") and question.strip():
 
-            # Inner product on normalized vectors
-            # is equivalent to cosine similarity.
-            index = faiss.IndexFlatIP(
-                embeddings.shape[1]
-            )
+                model = load_embedding_model()
 
-            index.add(embeddings)
+                query_embedding = model.encode(
+                    [question],
+                    normalize_embeddings=True,
+                    convert_to_numpy=True
+                ).astype("float32")
 
-            st.session_state["chunks"] = chunks
-            st.session_state["index"] = index
+                index = st.session_state["index"]
+                chunks = st.session_state["chunks"]
 
-        st.success(
-            f"Knowledge base ready: {len(chunks)} chunks."
-        )
+                k = min(3, len(chunks))
+                scores, indices = index.search(query_embedding, k)
 
-    if "index" in st.session_state:
+                # Keep passages that pass the temporary threshold
+                retrieved_chunks = []
+                retrieved_scores = []
 
-        question = st.text_input(
-            "Ask a question about your notes",
-            placeholder="What is the main idea of this document?"
-        )
+                for score, idx in zip(scores[0], indices[0]):
+                    if idx >= 0 and float(score) >= 0.15:
+                        retrieved_chunks.append(chunks[int(idx)])
+                        retrieved_scores.append(float(score))
 
-        if st.button("Find relevant passages") and question.strip():
+                st.subheader("AI Tutor's Answer")
 
-            model = load_embedding_model()
+                if not retrieved_chunks:
+                    st.warning(
+                        "I couldn't find sufficiently relevant passages "
+                        "in your uploaded material. Try rephrasing your question."
+                    )
 
-            query_embedding = model.encode(
-                [question],
-                normalize_embeddings=True,
-                convert_to_numpy=True
-            ).astype("float32")
-
-            index = st.session_state["index"]
-            chunks = st.session_state["chunks"]
-
-            k = min(3, len(chunks))
-            scores, indices = index.search(query_embedding, k)
-
-            # Keep passages that pass the temporary threshold
-            retrieved_chunks = []
-            retrieved_scores = []
-
-            for score, idx in zip(scores[0], indices[0]):
-                if idx >= 0 and float(score) >= 0.15:
-                    retrieved_chunks.append(chunks[int(idx)])
-                    retrieved_scores.append(float(score))
-
-            st.subheader("AI Tutor's Answer")
-
-            if not retrieved_chunks:
-                st.warning(
-                    "I couldn't find sufficiently relevant passages "
-                    "in your uploaded material. Try rephrasing your question."
-                )
-
-            else:
-                try:
-                    with st.spinner("Checking whether the passages support your question..."):
-                        evidence_result = verify_evidence(
-                            question, retrieved_chunks
-                        )
-
-                    # Check the first word of the verifier's response
-                    first_word = evidence_result.split()[0].upper().strip(".,:;") if evidence_result.split() else ""
-
-                    if first_word == "SUPPORTED":
-
-                        with st.spinner("Generating your explanation..."):
-                            answer = generate_answer(
+                else:
+                    try:
+                        with st.spinner("Checking whether the passages support your question..."):
+                            evidence_result = verify_evidence(
                                 question, retrieved_chunks
                             )
 
-                        st.markdown(answer)
+                        # Check the first word of the verifier's response
+                        first_word = evidence_result.split()[0].upper().strip(".,:;") if evidence_result.split() else ""
 
-                    elif first_word == "INSUFFICIENT":
+                        if first_word == "SUPPORTED":
 
-                        st.warning(
-                            "The uploaded material does not contain "
-                            "enough evidence to answer this question reliably."
-                        )
+                            with st.spinner("Generating your explanation..."):
+                                answer = generate_answer(
+                                    question, retrieved_chunks
+                                )
 
-                        with st.expander("Why couldn't I answer?"):
-                            st.write(evidence_result)
+                            st.markdown(answer)
 
-                    else:
-                        st.warning(
-                            "I couldn't verify the evidence confidently. "
-                            "Please try rephrasing your question."
-                        )
+                        elif first_word == "INSUFFICIENT":
 
-                except Exception as error:
-                    st.error("An error occurred while processing your question.")
-                    st.caption(f"Technical details: {error}")
+                            st.warning(
+                                "The uploaded material does not contain "
+                                "enough evidence to answer this question reliably."
+                            )
 
-            # Keep retrieved passages available for debugging
-            with st.expander("View retrieved passages and scores"):
-                if retrieved_chunks:
-                    for number, (chunk, score) in enumerate(
-                        zip(retrieved_chunks, retrieved_scores),
-                        start=1
-                    ):
-                        st.markdown(
-                            f"**Passage {number} — Page {chunk['page']}**"
-                        )
-                        with st.expander("View retrieved passages and scores"):
-                            if retrieved_chunks:
-                                for number, (chunk, score) in enumerate(
-                                    zip(retrieved_chunks, retrieved_scores),
-                                    start=1
-                                ):
-                                    st.markdown(
-                                        f"**Passage {number} — Page {chunk['page']}**"
-                                    )
+                            with st.expander("Why couldn't I answer?"):
+                                st.write(evidence_result)
 
-                                    # ADD THIS CODE HERE
-                                    st.caption(
-                                        f"Major topic: {chunk.get('major_topic', 'Unclassified')} | "
-                                        f"Subtopic: {chunk.get('subtopic', 'Unclassified')}"
-                                    )
+                        else:
+                            st.warning(
+                                "I couldn't verify the evidence confidently. "
+                                "Please try rephrasing your question."
+                            )
 
-                                    if chunk.get("key_topics"):
-                                        st.write(
-                                            "Key concepts: " + ", ".join(chunk["key_topics"])
+                    except Exception as error:
+                        st.error("An error occurred while processing your question.")
+                        st.caption(f"Technical details: {error}")
+
+                # Keep retrieved passages available for debugging
+                with st.expander("View retrieved passages and scores"):
+                    if retrieved_chunks:
+                        for number, (chunk, score) in enumerate(
+                            zip(retrieved_chunks, retrieved_scores),
+                            start=1
+                        ):
+                            st.markdown(
+                                f"**Passage {number} — Page {chunk['page']}**"
+                            )
+                            with st.expander("View retrieved passages and scores"):
+                                if retrieved_chunks:
+                                    for number, (chunk, score) in enumerate(
+                                        zip(retrieved_chunks, retrieved_scores),
+                                        start=1
+                                    ):
+                                        st.markdown(
+                                            f"**Passage {number} — Page {chunk['page']}**"
                                         )
 
-                                    # Existing code — keep it
-                                    st.caption(f"Cosine similarity: {score:.3f}")
-                                    st.write(chunk["text"])
-                                    st.divider()
-                            else:
-                                st.write("No passages passed the retrieval threshold.")
-                        st.caption(f"Cosine similarity: {score:.3f}")
-                        st.write(chunk["text"])
-                        st.divider()
-                else:
-                    st.write("No passages passed the retrieval threshold.")
+                                        # ADD THIS CODE HERE
+                                        st.caption(
+                                            f"Major topic: {chunk.get('major_topic', 'Unclassified')} | "
+                                            f"Subtopic: {chunk.get('subtopic', 'Unclassified')}"
+                                        )
 
-st.divider()
-st.header("📝 Practice Quiz")
-st.write("Test your understanding of the uploaded study material.")
+                                        if chunk.get("key_topics"):
+                                            st.write(
+                                                "Key concepts: " + ", ".join(chunk["key_topics"])
+                                            )
 
-if "quiz_questions" not in st.session_state:
-    st.session_state["quiz_questions"] = []
+                                        # Existing code — keep it
+                                        st.caption(f"Cosine similarity: {score:.3f}")
+                                        st.write(chunk["text"])
+                                        st.divider()
+                                else:
+                                    st.write("No passages passed the retrieval threshold.")
+                            st.caption(f"Cosine similarity: {score:.3f}")
+                            st.write(chunk["text"])
+                            st.divider()
+                    else:
+                        st.write("No passages passed the retrieval threshold.")
+if page == "Practice Quiz":
+    st.divider()
+    st.header("📝 Practice Quiz")
+    st.write("Test your understanding of the uploaded study material.")
 
-if "quiz_submitted" not in st.session_state:
-    st.session_state["quiz_submitted"] = False
+    if "quiz_questions" not in st.session_state:
+        st.session_state["quiz_questions"] = []
 
-quiz_hierarchy = st.session_state.get("topic_hierarchy", [])
+    if "quiz_submitted" not in st.session_state:
+        st.session_state["quiz_submitted"] = False
 
-quiz_topic_options = ["All topics"] + [
-    topic["name"] for topic in quiz_hierarchy
-]
+    quiz_hierarchy = st.session_state.get("topic_hierarchy", [])
 
-selected_quiz_topic = st.selectbox(
-    "Choose a topic for your quiz",
-    quiz_topic_options,
-    key="selected_quiz_topic"
-)
+    quiz_topic_options = ["All topics"] + [
+        topic["name"] for topic in quiz_hierarchy
+    ]
 
-if st.button("Generate Balanced Quiz"):
-    if "chunks" not in st.session_state:
-        st.warning("Upload a PDF and build the knowledge base first.")
-    else:
-        all_chunks = st.session_state["chunks"]
+    selected_quiz_topic = st.selectbox(
+        "Choose a topic for your quiz",
+        quiz_topic_options,
+        key="selected_quiz_topic"
+    )
 
-        if selected_quiz_topic == "All topics":
-            quiz_chunks = all_chunks
+    if st.button("Generate Balanced Quiz"):
+        if "chunks" not in st.session_state:
+            st.warning("Upload a PDF and build the knowledge base first.")
         else:
-            quiz_chunks = [
-                chunk for chunk in all_chunks
-                if chunk.get("major_topic") == selected_quiz_topic
-            ]
+            all_chunks = st.session_state["chunks"]
 
-        if not quiz_chunks:
-            st.warning("No content was found for this topic.")
-        else:
-            try:
-                with st.spinner("Generating your balanced quiz..."):
-                    questions = generate_quiz(
-                        quiz_chunks[:8],
-                        number_of_questions=5,
-                        focus_topic=(
-                            None if selected_quiz_topic == "All topics"
-                            else selected_quiz_topic
+            if selected_quiz_topic == "All topics":
+                quiz_chunks = all_chunks
+            else:
+                quiz_chunks = [
+                    chunk for chunk in all_chunks
+                    if chunk.get("major_topic") == selected_quiz_topic
+                ]
+
+            if not quiz_chunks:
+                st.warning("No content was found for this topic.")
+            else:
+                try:
+                    with st.spinner("Generating your balanced quiz..."):
+                        questions = generate_quiz(
+                            quiz_chunks[:8],
+                            number_of_questions=5,
+                            focus_topic=(
+                                None if selected_quiz_topic == "All topics"
+                                else selected_quiz_topic
+                            )
                         )
-                    )
 
-                st.session_state["quiz_questions"] = questions
-                st.session_state["quiz_submitted"] = False
-                st.session_state["quiz_attempt_recorded"] = False
-                st.session_state["quiz_results"] = None
-                st.success("Balanced quiz generated!")
+                    st.session_state["quiz_questions"] = questions
+                    st.session_state["quiz_submitted"] = False
+                    st.session_state["quiz_attempt_recorded"] = False
+                    st.session_state["quiz_results"] = None
+                    st.success("Balanced quiz generated!")
 
-            except Exception as error:
-                st.error("Could not generate the balanced quiz.")
-                st.caption(f"Details: {error}")
+                except Exception as error:
+                    st.error("Could not generate the balanced quiz.")
+                    st.caption(f"Details: {error}")
 
 
-questions = st.session_state.get("quiz_questions", [])
+    questions = st.session_state.get("quiz_questions", [])
 
-if questions:
-    with st.form("balanced_quiz_form"):
-        for i, q in enumerate(questions):
-            st.subheader(f"Question {i + 1}")
-            st.write(q["question"])
-            st.caption(
-                f"Type: {q['type'].replace('_', ' ').title()} | "
-                f"Difficulty: {q['difficulty']} | "
-                f"Source: Page {q['page']}"
-            )
-
-            if q["type"] == "mcq":
-                st.radio(
-                    "Choose one answer:",
-                    q["options"],
-                    key=f"quiz_answer_{i}",
-                    index=None
-                )
-
-            elif q["type"] == "short_answer":
-                st.text_area(
-                    "Write your answer:",
-                    key=f"quiz_answer_{i}"
-                )
-
-            elif q["type"] == "numerical":
-                st.text_input(
-                    f"Enter your numerical answer"
-                    + (f" ({q.get('unit', '')})" if q.get("unit") else "")
-                    + ":",
-                    key=f"quiz_answer_{i}"
-                )
-
-        submitted = st.form_submit_button("Submit Quiz")
-
-    if submitted:
-        results = []
-        score = 0
-
-        with st.spinner("Checking your answers..."):
+    if questions:
+        with st.form("balanced_quiz_form"):
             for i, q in enumerate(questions):
-                answer = st.session_state.get(f"quiz_answer_{i}", "")
-                correct = False
-                feedback = ""
+                st.subheader(f"Question {i + 1}")
+                st.write(q["question"])
+                st.caption(
+                    f"Type: {q['type'].replace('_', ' ').title()} | "
+                    f"Difficulty: {q['difficulty']} | "
+                    f"Source: Page {q['page']}"
+                )
 
                 if q["type"] == "mcq":
-                    correct = answer == q["correct_answer"]
-                    feedback = q["explanation"]
-
-                elif q["type"] == "short_answer":
-                    # Find source text from the cited page.
-                    source_text = "\n".join(
-                        chunk["text"]
-                        for chunk in st.session_state["chunks"]
-                        if chunk["page"] == q["page"]
+                    st.radio(
+                        "Choose one answer:",
+                        q["options"],
+                        key=f"quiz_answer_{i}",
+                        index=None
                     )
 
-                    if answer.strip():
-                        try:
-                            grading = grade_short_answer(
-                                q["question"],
-                                answer,
-                                q["reference_answer"],
-                                source_text
-                            )
-                            correct = grading["correct"]
-                            feedback = grading["feedback"]
-                        except Exception:
-                            correct = False
-                            feedback = (
-                                "Automatic grading failed. Compare your answer "
-                                "with the reference answer below."
-                            )
-                    else:
-                        feedback = "No answer was entered."
+                elif q["type"] == "short_answer":
+                    st.text_area(
+                        "Write your answer:",
+                        key=f"quiz_answer_{i}"
+                    )
 
                 elif q["type"] == "numerical":
-                    try:
-                        student_number = float(answer.strip())
-                        correct = (
-                            abs(student_number - q["numeric_answer"])
-                            <= q["tolerance"]
+                    st.text_input(
+                        f"Enter your numerical answer"
+                        + (f" ({q.get('unit', '')})" if q.get("unit") else "")
+                        + ":",
+                        key=f"quiz_answer_{i}"
+                    )
+
+            submitted = st.form_submit_button("Submit Quiz")
+
+        if submitted:
+            results = []
+            score = 0
+
+            with st.spinner("Checking your answers..."):
+                for i, q in enumerate(questions):
+                    answer = st.session_state.get(f"quiz_answer_{i}", "")
+                    correct = False
+                    feedback = ""
+
+                    if q["type"] == "mcq":
+                        correct = answer == q["correct_answer"]
+                        feedback = q["explanation"]
+
+                    elif q["type"] == "short_answer":
+                        # Find source text from the cited page.
+                        source_text = "\n".join(
+                            chunk["text"]
+                            for chunk in st.session_state["chunks"]
+                            if chunk["page"] == q["page"]
                         )
-                    except (ValueError, AttributeError):
-                        correct = False
 
-                    feedback = q["explanation"]
+                        if answer.strip():
+                            try:
+                                grading = grade_short_answer(
+                                    q["question"],
+                                    answer,
+                                    q["reference_answer"],
+                                    source_text
+                                )
+                                correct = grading["correct"]
+                                feedback = grading["feedback"]
+                            except Exception:
+                                correct = False
+                                feedback = (
+                                    "Automatic grading failed. Compare your answer "
+                                    "with the reference answer below."
+                                )
+                        else:
+                            feedback = "No answer was entered."
 
-                if correct:
-                    score += 1
+                    elif q["type"] == "numerical":
+                        try:
+                            student_number = float(answer.strip())
+                            correct = (
+                                abs(student_number - q["numeric_answer"])
+                                <= q["tolerance"]
+                            )
+                        except (ValueError, AttributeError):
+                            correct = False
 
-                results.append({
-                    "correct": correct,
-                    "feedback": feedback,
-                    "answer": answer
-                })
+                        feedback = q["explanation"]
 
-        st.session_state["quiz_results"] = results
-        st.session_state["quiz_score"] = score
-        st.session_state["quiz_submitted"] = True
+                    if correct:
+                        score += 1
 
-        # Record this attempt once, not on every Streamlit rerun.
-        if not st.session_state.get("quiz_attempt_recorded", False):
-            learner = st.session_state["learner_model"]
+                    results.append({
+                        "correct": correct,
+                        "feedback": feedback,
+                        "answer": answer
+                    })
 
-            for q, result in zip(questions, results):
-                topic = q["topic"]
+            st.session_state["quiz_results"] = results
+            st.session_state["quiz_score"] = score
+            st.session_state["quiz_submitted"] = True
 
-                if topic not in learner:
-                    learner[topic] = {"attempts": 0, "correct": 0}
+            # Record this attempt once, not on every Streamlit rerun.
+            if not st.session_state.get("quiz_attempt_recorded", False):
+                learner = st.session_state["learner_model"]
 
-                learner[topic]["attempts"] += 1
+                for q, result in zip(questions, results):
+                    topic = q["topic"]
+
+                    if topic not in learner:
+                        learner[topic] = {"attempts": 0, "correct": 0}
+
+                    learner[topic]["attempts"] += 1
+                    if result["correct"]:
+                        learner[topic]["correct"] += 1
+
+                st.session_state["learner_model"] = learner
+                st.session_state["quiz_attempt_recorded"] = True
+
+        if st.session_state.get("quiz_submitted"):
+            results = st.session_state.get("quiz_results") or []
+
+            st.subheader("Quiz Results")
+
+            for i, (q, result) in enumerate(zip(questions, results)):
                 if result["correct"]:
-                    learner[topic]["correct"] += 1
+                    st.success(f"Question {i + 1}: Correct")
+                else:
+                    st.error(f"Question {i + 1}: Needs review")
 
-            st.session_state["learner_model"] = learner
-            st.session_state["quiz_attempt_recorded"] = True
+                st.write("Feedback:", result["feedback"])
 
-    if st.session_state.get("quiz_submitted"):
-        results = st.session_state.get("quiz_results") or []
+                if q["type"] == "mcq":
+                    st.write("Correct answer:", q["correct_answer"])
+                elif q["type"] == "short_answer":
+                    st.write("Reference answer:", q["reference_answer"])
+                elif q["type"] == "numerical":
+                    expected = q["numeric_answer"]
+                    unit = q.get("unit", "")
+                    st.write(f"Expected answer: {expected} {unit}".strip())
 
-        st.subheader("Quiz Results")
+                st.write("Explanation:", q["explanation"])
+                st.caption(f"Review source: Page {q['page']}")
+                st.divider()
 
-        for i, (q, result) in enumerate(zip(questions, results)):
-            if result["correct"]:
-                st.success(f"Question {i + 1}: Correct")
-            else:
-                st.error(f"Question {i + 1}: Needs review")
+            st.metric("Your Score", f"{st.session_state['quiz_score']} / {len(questions)}")
+if page == "My Progress":
+    st.divider()
+    st.header("📊 Your Learning Progress")
 
-            st.write("Feedback:", result["feedback"])
+    learner = st.session_state["learner_model"]
 
-            if q["type"] == "mcq":
-                st.write("Correct answer:", q["correct_answer"])
-            elif q["type"] == "short_answer":
-                st.write("Reference answer:", q["reference_answer"])
-            elif q["type"] == "numerical":
-                expected = q["numeric_answer"]
-                unit = q.get("unit", "")
-                st.write(f"Expected answer: {expected} {unit}".strip())
+    if not learner:
+        st.info("Complete a quiz to start tracking your progress.")
 
-            st.write("Explanation:", q["explanation"])
-            st.caption(f"Review source: Page {q['page']}")
-            st.divider()
+    else:
+        for topic, data in learner.items():
 
-        st.metric("Your Score", f"{st.session_state['quiz_score']} / {len(questions)}")
+            attempts = data["attempts"]
+            correct = data["correct"]
 
-st.divider()
-st.header("📊 Your Learning Progress")
+            mastery = ((correct + 1) / (attempts + 2)) * 100
 
-learner = st.session_state["learner_model"]
+            st.subheader(topic)
 
-if not learner:
-    st.info("Complete a quiz to start tracking your progress.")
+            st.progress(mastery / 100)
 
-else:
-    for topic, data in learner.items():
+            st.write(
+                f"Mastery estimate: {mastery:.0f}% "
+                f"({correct} correct out of {attempts})"
+            )
 
+        weak_topics = [
+            topic
+            for topic, data in learner.items()
+            if (data["correct"] + 1) / (data["attempts"] + 2) < 0.6
+        ]
+
+        if weak_topics:
+            st.warning(
+                "Topics to revise: " + ", ".join(weak_topics)
+            )
+        else:
+            st.success(
+                "Good progress! No tracked topic is currently "
+                "below 60% mastery."
+            )
+        
+    st.divider()
+    st.header("🎯 Practice Weak Topics")
+
+    learner = st.session_state["learner_model"]
+    weak_topics = get_weak_topics(learner)
+
+    if not learner:
+        st.info(
+            "Complete a quiz first to identify topics "
+            "that need more practice."
+        )
+
+    elif not weak_topics:
+        st.success(
+            "No tracked topics are currently below "
+            "the 60% mastery threshold."
+        )
+        st.write(
+            "Keep practising to reinforce your understanding."
+        )
+
+    else:
+        # Rank topics from lowest to highest estimated mastery.
+        weak_topics = sorted(
+            weak_topics,
+            key=lambda topic: (
+                learner[topic]["correct"] + 1
+            ) / (
+                learner[topic]["attempts"] + 2
+            )
+        )
+
+        selected_topic = st.selectbox(
+            "Choose a topic to revise",
+            weak_topics,
+            key="weak_topic_selector"
+        )
+
+        data = learner[selected_topic]
         attempts = data["attempts"]
         correct = data["correct"]
 
-        mastery = ((correct + 1) / (attempts + 2)) * 100
+        mastery = (
+            (correct + 1) / (attempts + 2)
+        ) * 100
 
-        st.subheader(topic)
-
+        st.metric("Estimated mastery", f"{mastery:.0f}%")
         st.progress(mastery / 100)
 
         st.write(
-            f"Mastery estimate: {mastery:.0f}% "
-            f"({correct} correct out of {attempts})"
+            f"Quiz performance: {correct} correct "
+            f"out of {attempts} attempts."
         )
 
-    weak_topics = [
-        topic
-        for topic, data in learner.items()
-        if (data["correct"] + 1) / (data["attempts"] + 2) < 0.6
-    ]
-
-    if weak_topics:
-        st.warning(
-            "Topics to revise: " + ", ".join(weak_topics)
+        st.info(
+            get_revision_advice(attempts, correct, mastery)
         )
-    else:
-        st.success(
-            "Good progress! No tracked topic is currently "
-            "below 60% mastery."
-        )
-    
-st.divider()
-st.header("🎯 Practice Weak Topics")
 
-learner = st.session_state["learner_model"]
-weak_topics = get_weak_topics(learner)
-
-if not learner:
-    st.info(
-        "Complete a quiz first to identify topics "
-        "that need more practice."
-    )
-
-elif not weak_topics:
-    st.success(
-        "No tracked topics are currently below "
-        "the 60% mastery threshold."
-    )
-    st.write(
-        "Keep practising to reinforce your understanding."
-    )
-
-else:
-    # Rank topics from lowest to highest estimated mastery.
-    weak_topics = sorted(
-        weak_topics,
-        key=lambda topic: (
-            learner[topic]["correct"] + 1
-        ) / (
-            learner[topic]["attempts"] + 2
-        )
-    )
-
-    selected_topic = st.selectbox(
-        "Choose a topic to revise",
-        weak_topics,
-        key="weak_topic_selector"
-    )
-
-    data = learner[selected_topic]
-    attempts = data["attempts"]
-    correct = data["correct"]
-
-    mastery = (
-        (correct + 1) / (attempts + 2)
-    ) * 100
-
-    st.metric("Estimated mastery", f"{mastery:.0f}%")
-    st.progress(mastery / 100)
-
-    st.write(
-        f"Quiz performance: {correct} correct "
-        f"out of {attempts} attempts."
-    )
-
-    st.info(
-        get_revision_advice(attempts, correct, mastery)
-    )
-
-    if st.button("Show Revision Material"):
-        with st.spinner("Finding relevant passages..."):
-            passages = retrieve_chunks_for_topic(
-                selected_topic,
-                st.session_state.get("chunks", []),
-                top_k=3
-            )
-
-        if passages:
-            st.subheader("Recommended passages to review")
-
-            for passage in passages:
-                st.caption(f"Source: Page {passage['page']}")
-                st.write(passage["text"])
-                st.divider()
-        else:
-            st.warning(
-                "Build the knowledge base first, "
-                "or no relevant passages were found."
-            )
-
-    if st.button("Generate Targeted Quiz"):
-        chunks = st.session_state.get("chunks", [])
-
-        if not chunks:
-            st.warning(
-                "Upload a PDF and build the knowledge base first."
-            )
-        else:
-            try:
-                with st.spinner(
-                    f"Creating a quiz about {selected_topic}..."
-                ):
-                    relevant_chunks = retrieve_chunks_for_topic(
-                        selected_topic,
-                        chunks,
-                        top_k=8
-                    )
-
-                    if not relevant_chunks:
-                        st.warning(
-                            "No relevant passages were found."
-                        )
-                    else:
-                        targeted_questions = generate_quiz(
-                            relevant_chunks,
-                            number_of_questions=5,
-                            focus_topic=selected_topic
-                        )
-
-                        st.session_state["quiz_questions"] = (
-                            targeted_questions
-                        )
-                        st.session_state["quiz_submitted"] = False
-                        st.session_state["quiz_attempt_recorded"] = False
-                        st.session_state["quiz_results"] = None
-
-                        st.success("Targeted quiz generated!")
-                        st.rerun()
-
-            except Exception as error:
-                st.error("Could not generate the targeted quiz.")
-                st.caption(f"Details: {error}")
-st.divider()
-st.header("🗂️ Study Material Topic Map")
-
-topic_hierarchy = st.session_state.get("topic_hierarchy", [])
-
-if not topic_hierarchy:
-    st.info("Build the knowledge base to discover topics.")
-
-else:
-    for major in topic_hierarchy:
-        with st.expander("📘 " + major["name"]):
-            for subtopic in major.get("subtopics", []):
-                st.markdown("### " + subtopic["name"])
-
-                key_topics = subtopic.get("key_topics", [])
-
-                if key_topics:
-                    st.write("Key concepts:", ", ".join(key_topics))
-
-                matching_chunks = [
-                    chunk
-                    for chunk in st.session_state.get("chunks", [])
-                    if chunk.get("major_topic") == major["name"]
-                    and chunk.get("subtopic") == subtopic["name"]
-                ]
-
-                st.caption(
-                    f"{len(matching_chunks)} tagged content unit(s)"
+        if st.button("Show Revision Material"):
+            with st.spinner("Finding relevant passages..."):
+                passages = retrieve_chunks_for_topic(
+                    selected_topic,
+                    st.session_state.get("chunks", []),
+                    top_k=3
                 )
 
-                for chunk in matching_chunks:
-                    st.markdown(f"**Source: Page {chunk['page']}**")
-                    st.write(chunk["text"])
+            if passages:
+                st.subheader("Recommended passages to review")
+
+                for passage in passages:
+                    st.caption(f"Source: Page {passage['page']}")
+                    st.write(passage["text"])
                     st.divider()
+            else:
+                st.warning(
+                    "Build the knowledge base first, "
+                    "or no relevant passages were found."
+                )
+
+        if st.button("Generate Targeted Quiz"):
+            chunks = st.session_state.get("chunks", [])
+
+            if not chunks:
+                st.warning(
+                    "Upload a PDF and build the knowledge base first."
+                )
+            else:
+                try:
+                    with st.spinner(
+                        f"Creating a quiz about {selected_topic}..."
+                    ):
+                        relevant_chunks = retrieve_chunks_for_topic(
+                            selected_topic,
+                            chunks,
+                            top_k=8
+                        )
+
+                        if not relevant_chunks:
+                            st.warning(
+                                "No relevant passages were found."
+                            )
+                        else:
+                            targeted_questions = generate_quiz(
+                                relevant_chunks,
+                                number_of_questions=5,
+                                focus_topic=selected_topic
+                            )
+
+                            st.session_state["quiz_questions"] = (
+                                targeted_questions
+                            )
+                            st.session_state["quiz_submitted"] = False
+                            st.session_state["quiz_attempt_recorded"] = False
+                            st.session_state["quiz_results"] = None
+
+                            st.success("Targeted quiz generated!")
+                            st.rerun()
+
+                except Exception as error:
+                    st.error("Could not generate the targeted quiz.")
+                    st.caption(f"Details: {error}")
+
+if page == "Topic Map":
+    st.divider()
+    st.header("🗂️ Study Material Topic Map")
+
+    topic_hierarchy = st.session_state.get("topic_hierarchy", [])
+
+    if not topic_hierarchy:
+        st.info("Build the knowledge base to discover topics.")
+
+    else:
+        for major in topic_hierarchy:
+            with st.expander("📘 " + major["name"]):
+                for subtopic in major.get("subtopics", []):
+                    st.markdown("### " + subtopic["name"])
+
+                    key_topics = subtopic.get("key_topics", [])
+
+                    if key_topics:
+                        st.write("Key concepts:", ", ".join(key_topics))
+
+                    matching_chunks = [
+                        chunk
+                        for chunk in st.session_state.get("chunks", [])
+                        if chunk.get("major_topic") == major["name"]
+                        and chunk.get("subtopic") == subtopic["name"]
+                    ]
+
+                    st.caption(
+                        f"{len(matching_chunks)} tagged content unit(s)"
+                    )
+
+                    for chunk in matching_chunks:
+                        st.markdown(f"**Source: Page {chunk['page']}**")
+                        st.write(chunk["text"])
+                        st.divider()
