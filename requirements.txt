@@ -1,2 +1,6 @@
+streamlit
 PyMuPDF
-faiss
+numpy
+faiss-cpu
+groq
+sentence-transformers
