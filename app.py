@@ -21,6 +21,38 @@ def get_weak_topics(learner_model):
 
     return weak_topics
 
+
+def get_revision_advice(attempts, correct, mastery):
+    accuracy = correct / attempts if attempts > 0 else 0
+
+    # A few attempts are not enough for a confident estimate
+    if attempts < 3:
+        return (
+            "Your progress estimate is still based on a small number "
+            "of questions. Review the material and try a few more "
+            "questions to get a clearer picture of your understanding."
+        )
+
+    # Very low estimated mastery
+    if mastery < 40:
+        return (
+            "Prioritize this topic. Revisit the basic concepts and "
+            "examples in your notes before attempting another quiz."
+        )
+
+    # Below the current 60% threshold
+    if mastery < 60:
+        return (
+            "Review the key definitions and supporting examples, "
+            "then attempt a targeted quiz to strengthen your understanding."
+        )
+
+    # Maintenance advice for topics outside the weak group
+    return (
+        "Continue practising this topic periodically to reinforce "
+        "your understanding."
+    )
+
 # Initialize the learner model
 if "learner_model" not in st.session_state:
     st.session_state["learner_model"] = {}
@@ -40,6 +72,33 @@ st.write("Upload notes and search them using natural language.")
 def load_embedding_model():
     return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
+def retrieve_chunks_for_topic(topic, chunks, top_k=3):
+    if not chunks:
+        return []
+
+    model = load_embedding_model()
+
+    query_embedding = model.encode(
+        [f"Study material explaining {topic}"],
+        normalize_embeddings=True,
+        convert_to_numpy=True
+    ).astype("float32")
+
+    index = st.session_state.get("index")
+
+    if index is None:
+        return []
+
+    k = min(top_k, len(chunks))
+    scores, indices = index.search(query_embedding, k)
+
+    results = []
+
+    for idx in indices[0]:
+        if idx >= 0:
+            results.append(chunks[int(idx)])
+
+    return results
 
 def create_chunks(pdf_file, chunk_size=1000, overlap=1):
     document = pymupdf.open(stream=pdf_file, filetype="pdf")
@@ -276,17 +335,29 @@ You are a careful quiz creator.
 Use ONLY the supplied study material. Do not invent facts,
 formulas, numerical values, or answers.
 
-Create exactly 5 questions:
+Create exactly 5 questions.
+
+PREFERRED FORMAT:
 - 3 MCQs
 - 1 short-answer question
-- 1 numerical question, only if a calculation is supported
-  by the supplied material.
+- 1 numerical question, if supported by the material.
 
-If the material does not contain a ready-made numerical
-example, create a simple calculation using only formulas,
-facts, and values explicitly supported by the material.
-If no valid calculation is possible, clearly report that
-instead of inventing unsupported facts.
+FALLBACK FORMAT:
+If the supplied material is too limited to create a valid
+short-answer or numerical question, generate exactly 5 MCQs.
+
+Use the fallback format whenever the preferred balanced
+format cannot be created reliably.
+
+For every question:
+- Use ONLY the supplied study material.
+- Do not invent facts, formulas, values, or answers.
+- Ensure every question is answerable from the material.
+- For MCQs, provide exactly 4 options and one correct answer.
+- Include an explanation, source page, topic, and difficulty.
+
+For numerical questions, use only supported calculations.
+If no valid numerical question is possible, use the fallback.
 
 Every question must include:
 type, question, topic, explanation, page, difficulty.
@@ -361,13 +432,23 @@ Return only valid JSON:
             f"{[q.get('type', 'missing') for q in questions]}"
         )
     types = [q.get("type") for q in questions]
-    if types.count("mcq") != 3:
-        raise ValueError("The quiz must contain exactly 3 MCQs.")
-    if types.count("short_answer") != 1:
-        raise ValueError("The quiz must contain 1 short-answer question.")
-    if types.count("numerical") != 1:
-        raise ValueError("The quiz must contain 1 numerical question.")
+    
+    balanced_quiz = (
+        types.count("mcq") == 3
+        and types.count("short_answer") == 1
+        and types.count("numerical") == 1
+    )
 
+    mcq_fallback = all(
+        question_type == "mcq"
+        for question_type in types
+    )
+
+    if not balanced_quiz and not mcq_fallback:
+        raise ValueError(
+            "Quiz must contain either 3 MCQs, 1 short-answer "
+            "and 1 numerical question, or exactly 5 MCQs."
+        )
     for q in questions:
         if not all(q.get(k) for k in ["question", "topic", "explanation"]):
             raise ValueError("A question is missing required information.")
@@ -968,7 +1049,127 @@ else:
             "below 60% mastery."
         )
     
+st.divider()
+st.header("🎯 Practice Weak Topics")
 
+learner = st.session_state["learner_model"]
+weak_topics = get_weak_topics(learner)
+
+if not learner:
+    st.info(
+        "Complete a quiz first to identify topics "
+        "that need more practice."
+    )
+
+elif not weak_topics:
+    st.success(
+        "No tracked topics are currently below "
+        "the 60% mastery threshold."
+    )
+    st.write(
+        "Keep practising to reinforce your understanding."
+    )
+
+else:
+    # Rank topics from lowest to highest estimated mastery.
+    weak_topics = sorted(
+        weak_topics,
+        key=lambda topic: (
+            learner[topic]["correct"] + 1
+        ) / (
+            learner[topic]["attempts"] + 2
+        )
+    )
+
+    selected_topic = st.selectbox(
+        "Choose a topic to revise",
+        weak_topics,
+        key="weak_topic_selector"
+    )
+
+    data = learner[selected_topic]
+    attempts = data["attempts"]
+    correct = data["correct"]
+
+    mastery = (
+        (correct + 1) / (attempts + 2)
+    ) * 100
+
+    st.metric("Estimated mastery", f"{mastery:.0f}%")
+    st.progress(mastery / 100)
+
+    st.write(
+        f"Quiz performance: {correct} correct "
+        f"out of {attempts} attempts."
+    )
+
+    st.info(
+        get_revision_advice(attempts, correct, mastery)
+    )
+
+    if st.button("Show Revision Material"):
+        with st.spinner("Finding relevant passages..."):
+            passages = retrieve_chunks_for_topic(
+                selected_topic,
+                st.session_state.get("chunks", []),
+                top_k=3
+            )
+
+        if passages:
+            st.subheader("Recommended passages to review")
+
+            for passage in passages:
+                st.caption(f"Source: Page {passage['page']}")
+                st.write(passage["text"])
+                st.divider()
+        else:
+            st.warning(
+                "Build the knowledge base first, "
+                "or no relevant passages were found."
+            )
+
+    if st.button("Generate Targeted Quiz"):
+        chunks = st.session_state.get("chunks", [])
+
+        if not chunks:
+            st.warning(
+                "Upload a PDF and build the knowledge base first."
+            )
+        else:
+            try:
+                with st.spinner(
+                    f"Creating a quiz about {selected_topic}..."
+                ):
+                    relevant_chunks = retrieve_chunks_for_topic(
+                        selected_topic,
+                        chunks,
+                        top_k=8
+                    )
+
+                    if not relevant_chunks:
+                        st.warning(
+                            "No relevant passages were found."
+                        )
+                    else:
+                        targeted_questions = generate_quiz(
+                            relevant_chunks,
+                            number_of_questions=5,
+                            focus_topic=selected_topic
+                        )
+
+                        st.session_state["quiz_questions"] = (
+                            targeted_questions
+                        )
+                        st.session_state["quiz_submitted"] = False
+                        st.session_state["quiz_attempt_recorded"] = False
+                        st.session_state["quiz_results"] = None
+
+                        st.success("Targeted quiz generated!")
+                        st.rerun()
+
+            except Exception as error:
+                st.error("Could not generate the targeted quiz.")
+                st.caption(f"Details: {error}")
 st.divider()
 st.header("🗂️ Study Material Topic Map")
 
