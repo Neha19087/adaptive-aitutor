@@ -1,623 +1,459 @@
 # Adaptive AI Tutor
 
-## System Architecture, Grounding Method, and Learner Model
+## Architecture, Grounding Method, and Learner Model
+
+**Purpose:** Document the current design of the Adaptive AI Tutor,
+including content ingestion, retrieval-augmented generation (RAG),
+source grounding, quiz generation, and lightweight learner-progress
+tracking.
+
+> This document describes the implementation as understood from the
+> project code and recent development context. External-service
+> behaviour depends on Groq and YouTube caption availability. Heuristics
+> are not guarantees of correctness.
 
 ## 1. Project Overview
 
-The Adaptive AI Tutor is an AI-powered learning application designed to
-help students understand study material, explore topics, practise
-questions, and monitor their learning progress. It uses uploaded
-educational documents as its knowledge source and combines semantic
-search with a large language model to provide context-aware answers.
+The Adaptive AI Tutor is a Streamlit learning application that helps
+students study material, ask questions, practise quizzes, and review
+topic-wise performance. It supports:
 
-The system aims to make learning more interactive by connecting
-explanations and quiz questions to the original study material. It also
-maintains a learner model that estimates topic-wise mastery from quiz
-performance and identifies topics that may require additional revision.
+-   **PDFs:** text extraction with PyMuPDF and page metadata.
+-   **Uploaded videos:** audio transcription through Groq, with
+    transcript segments and timestamps where available.
+-   **YouTube videos:** caption retrieval through
+    `youtube-transcript-api`; this may fail if captions are unavailable
+    or YouTube blocks requests from a cloud IP.
 
-### Main Objectives
+All supported sources are represented as text chunks with source
+metadata. The application discovers and assigns topic labels, embeds
+chunks, and indexes them for semantic retrieval.
 
--   Enable students to upload educational material in PDF format.
--   Extract text and organize it into searchable chunks.
--   Retrieve relevant passages when a student asks a question.
--   Generate answers grounded in the supplied material.
--   Display source-page references to support verification.
--   Generate quizzes and provide answers, explanations, and feedback.
--   Track learner performance and highlight potentially weak topics.
+## 2. System Architecture
 
-------------------------------------------------------------------------
-
-# 2. System Architecture
-
-## 2.1 Architecture Overview
-
-The application follows a modular architecture consisting of document
-processing, semantic indexing, retrieval, evidence verification,
-AI-generated responses, quiz generation, and learner-progress tracking.
-
-### High-Level Workflow
+### 2.1 High-level workflow
 
 ``` text
-             Student
-                |
-                v
-       Streamlit User Interface
-                |
-        +-------+--------+
-        |                |
-        v                v
-   PDF Upload       Student Question
-        |                |
-        v                v
-   PDF Text        Query Embedding
-   Extraction            |
-        |                v
-        v           FAISS Search
-   Text Chunking          |
-        |                v
-        v          Relevant Chunks
-   Embeddings             |
-        |                v
-        v         Evidence Verification
-   FAISS Index             |
-                           v
-                    Groq LLM API
-                           |
-                           v
-                  Grounded Answer
-                  with Page Citations
+                         Student
+                            |
+                            v
+                    Streamlit application
+                            |
+             +--------------+----------------+
+             |              |                |
+             v              v                v
+        PDF upload     Video upload      YouTube URL
+             |              |                |
+             v              v                v
+       PyMuPDF text    Groq transcription  Caption retrieval
+       extraction      and segmentation   (may be blocked)
+             |              |                |
+             +--------------+----------------+
+                            |
+                            v
+                    Common content chunks
+             (text + source + page/time metadata)
+                            |
+                            v
+                  Topic hierarchy discovery
+                  and chunk topic tagging
+                            |
+                            v
+                SentenceTransformer embeddings
+                      all-MiniLM-L6-v2
+                            |
+                            v
+                Vector normalization and FAISS
+                     IndexFlatIP similarity
+                            |
+              +-------------+-------------+
+              |                           |
+              v                           v
+       Student question             Quiz generation
+              |                           |
+              v                           v
+       Query embedding              Study passages
+              |                           |
+              v                           v
+       FAISS retrieval             Groq structured output
+              |
+              v
+      Evidence verification
+              |
+              v
+     Answer + source references
 
-        Quiz Generation and Assessment
-                       |
-                       v
-                 Quiz Results
-                       |
-                       v
-                  Learner Model
-                       |
-                       v
-             Mastery and Weak Topics
+       Quiz submissions -> learner statistics -> dashboard
 ```
 
-The document-ingestion workflow prepares the knowledge base. The
-question-answering workflow uses that knowledge base to retrieve
-relevant evidence before generating an answer. Quiz results feed into
-the learner model to support progress tracking.
+### 2.2 Interface and state
 
-## 2.2 Technology Stack
+Streamlit provides the interface for loading study material, selecting
+topics, asking questions, practising quizzes, and reviewing progress.
+The main application is implemented in `app.py`.
+
+Session state holds active data such as:
+
+-   `chunks`: passages and their metadata;
+-   `index`: the FAISS vector index;
+-   `topic_hierarchy`: the discovered topic structure;
+-   quiz and learner-progress state used by the interface.
+
+This supports an interactive session. It should not be described as a
+permanent learner profile unless durable storage is added.
+
+### 2.3 Chunk representation
+
+A content chunk may contain:
 
   -----------------------------------------------------------------------
-  Component               Technology              Purpose
-  ----------------------- ----------------------- -----------------------
-  User interface          Streamlit               Provides the
-                                                  interactive web
-                                                  application
+  Field                               Meaning
+  ----------------------------------- -----------------------------------
+  `text`                              Passage used for retrieval and
+                                      model context
 
-  PDF processing          PyMuPDF                 Extracts text and page
-                                                  information from PDFs
+  `page`                              PDF page number, when applicable
 
-  Text embeddings         Sentence Transformers,  Converts text into
-                          `all-MiniLM-L6-v2`      numerical vectors
+  `source_type`                       Source category, e.g. `pdf`,
+                                      `video`, or `youtube`
 
-  Vector search           FAISS, `IndexFlatIP`    Retrieves semantically
-                                                  similar text chunks
+  `source_name`                       Uploaded filename or YouTube URL
 
-  Language model          Groq API with           Generates answers and
-                          `openai/gpt-oss-120b`   structured quiz content
+  `timestamp`                         Human-readable video time, when
+                                      available
 
-  Application logic       Python                  Coordinates processing,
-                                                  retrieval, generation,
-                                                  and scoring
+  `timestamp_start` / `timestamp_end` Segment boundaries, when available
 
-  Learner state           Streamlit session state Stores quiz performance
-                                                  and progress during the
-                                                  session
+  topic tags                          Topic labels assigned during
+                                      tagging
   -----------------------------------------------------------------------
 
-## 2.3 Document Ingestion and Preprocessing
+PDF page numbers are one-indexed in the current design. Video chunks may
+have timestamps; a manually supplied transcript may not. The application
+should not invent a page or time when the source does not provide one.
 
-When a student uploads a PDF, the application extracts its text using
-PyMuPDF. The extracted text retains page information so that retrieved
-passages can be connected to their original pages.
+### 2.4 Topic discovery and tagging
 
-The extracted text is divided into smaller chunks. Chunking makes the
-material easier to search and helps prevent the language model from
-receiving an entire document when only a few passages are relevant.
+An LLM-assisted workflow discovers a topic hierarchy and tags content
+chunks. The intended hierarchy distinguishes:
 
-Each chunk contains information such as:
+-   **Major topics:** broad subject areas;
+-   **Subtopics:** narrower areas under a major topic;
+-   **Key topics/concepts:** specific ideas useful for study and
+    practice.
+
+Topic tags support organization, topic selection, and associating quiz
+outcomes with topics. Because labels are model-generated, synonyms and
+inconsistent names can fragment statistics unless labels are normalized.
+
+### 2.5 Embeddings and FAISS
 
--   The extracted text.
--   The source page number.
--   Topic-related metadata, where available.
+The application uses SentenceTransformers with `all-MiniLM-L6-v2` to
+convert passages into dense semantic vectors. Vectors are normalized and
+stored in a FAISS `IndexFlatIP` index. For normalized vectors,
+inner-product ranking corresponds to cosine-similarity ranking.
 
-The chunks are subsequently converted into embeddings.
+At question time, the query is embedded in the same vector space and
+FAISS retrieves semantically similar passages. Similarity is a relevance
+signal, not proof that a passage contains the answer.
+
+### 2.6 External services
+
+-   **Groq API:** used for language-model operations such as topic
+    discovery/tagging, answer generation, quiz generation, and video
+    transcription, depending on the workflow.
+-   **YouTube captions:** retrieved through `youtube-transcript-api`
+    when captions are accessible and the request is permitted.
+
+These dependencies have separate failure modes. A Groq quota limit can
+block model-dependent tasks. A YouTube IP block can stop caption
+retrieval even when the video plays normally in a browser.
+
+## 3. Grounding Method
+
+### 3.1 Retrieval-Augmented Generation (RAG)
+
+The tutor follows this RAG workflow:
+
+1.  **Ingest:** extract or transcribe study material.
+2.  **Chunk:** split it into retrievable passages.
+3.  **Embed:** convert each passage into a semantic vector.
+4.  **Index:** store vectors in FAISS.
+5.  **Retrieve:** embed a student's question and find relevant chunks.
+6.  **Construct context:** supply selected passages to the language
+    model with instructions to use the provided material.
+7.  **Generate:** create an answer based on the retrieved context.
+8.  **Verify and cite:** use the evidence-verification logic and source
+    metadata to help detect unsupported claims and provide traceable
+    references.
+
+The system retrieves a smaller set of passages for each request rather
+than relying on the entire original file being included in every prompt.
+
+### 3.2 Meaning of grounding
+
+A response is grounded when its substantive claims are supported by the
+retrieved study passages. The source material is intended to take
+precedence over unrelated outside knowledge.
 
-## 2.4 Embedding Generation and Indexing
+The answer prompt and evidence-verification stage aim to reduce
+unsupported claims. They do not guarantee correctness: retrieval can
+miss relevant evidence, a model can misinterpret a passage, and a
+citation can point to related but insufficient content.
 
-An embedding represents a text passage as a numerical vector. The
-application uses the `all-MiniLM-L6-v2` Sentence Transformer model to
-generate these vectors.
+Grounding is therefore a layered safeguard:
 
-The vectors are stored in a FAISS `IndexFlatIP` index. The application
-can then compare a question embedding against the indexed chunk
-embeddings to retrieve potentially relevant passages.
+-   semantic retrieval supplies candidate evidence;
+-   prompt instructions constrain generation to that evidence;
+-   evidence verification checks claims against available material;
+-   source metadata lets the learner inspect the referenced location.
 
-The similarity search helps retrieve passages based on meaning rather
-than requiring an exact keyword match.
+### 3.3 Source attribution
 
-## 2.5 Topic Hierarchy
+Metadata is retained so the interface can display the location
+associated with a chunk:
 
-The application also uses AI-assisted topic discovery to organize the
-study material into major topics, subtopics, and key concepts.
+-   **PDF:** page number.
+-   **Uploaded video or YouTube:** source name and timestamp when
+    available.
+-   **Transcript without a timestamp:** indicate that the transcript is
+    manual or the timestamp is unavailable.
 
-This hierarchy supports topic exploration and quiz selection. It also
-provides a basis for organizing learner progress by topic.
+For quiz questions, a safer source-attribution design is for the model
+to return a passage ID, then have Python map that ID to the actual
+chunk. The page or timestamp is taken from the chunk rather than
+trusting the model to invent a location. The cited passage must still be
+checked to ensure it supports the question and answer.
 
-Because topic names are generated from the material, the same concept
-may occasionally receive slightly different labels. This can affect how
-consistently progress is grouped.
-
-## 2.6 Question-Answering Workflow
-
-When a student asks a question, the application follows this sequence:
-
-1.  Convert the question into an embedding.
-2.  Search the FAISS index for relevant chunks.
-3.  Select the highest-ranking passages that satisfy the retrieval
-    criteria.
-4.  Check whether the retrieved evidence is sufficient to answer the
-    question.
-5.  Send the question and retrieved evidence to the Groq language model.
-6.  Generate an answer with source-page references.
-7.  Return the answer to the student through the Streamlit interface.
+### 3.4 Quiz grounding and validation
 
-The current retrieval approach uses a small set of top-ranked passages,
-with a similarity threshold, rather than passing the entire document to
-the model.
-
-## 2.7 Quiz-Generation Workflow
-
-The quiz component uses the selected topic and retrieved study material
-to generate questions. The balanced-quiz design requests:
-
--   Three multiple-choice questions.
--   One short-answer question.
--   One numerical question, provided a valid calculation is supported by
-    the material.
+The concept-focused MCQ workflow aims to test important definitions,
+mechanisms, applications, comparisons, and cause-and-effect
+relationships---not incidental presentation details such as who spoke or
+when a topic was mentioned.
 
-The questions include relevant metadata such as topic, difficulty,
-explanation, and source page. Multiple-choice questions contain options
-and a correct answer. Short-answer questions include a reference answer,
-while numerical questions include an expected value and tolerance.
+The updated MCQ validation design checks that:
 
-The application validates the generated question count, types, and
-required fields before accepting the quiz. Consequently, an AI response
-that does not match the expected structure can cause quiz generation to
-fail.
+-   required fields are present;
+-   each question has four distinct options;
+-   the correct answer exactly matches one option;
+-   a valid source-chunk ID is supplied;
+-   the ID maps to an existing chunk;
+-   page or timestamp metadata is taken from that chunk;
+-   difficulty is one of `Easy`, `Medium`, or `Hard`.
 
-------------------------------------------------------------------------
+These checks catch malformed output and some source-attribution errors.
+They do not prove that a question is useful, that its answer key is
+correct, or that its explanation is fully supported. Those qualities
+require testing and, where appropriate, human review.
 
-# 3. Grounding Method
+### 3.5 Grounding limitations
 
-## 3.1 What Grounding Means
+-   **Retrieval misses:** relevant passages may not rank highly enough.
+-   **Incomplete context:** some answers require multiple passages or
+    content that was not retrieved.
+-   **Ambiguous sources:** similar passages can lead to incorrect
+    attribution.
+-   **Model errors:** answers, explanations, and answer keys can still
+    be wrong.
+-   **Numerical questions:** calculations and units may require
+    independent validation.
+-   **Image-based material:** ordinary text extraction may not capture
+    diagrams or scanned pages unless OCR or image understanding is
+    added.
+-   **YouTube access:** caption ingestion depends on caption
+    availability and network access; cloud IP blocking can interrupt it.
 
-Grounding is the process of constraining an AI-generated answer using
-evidence from an identified knowledge source.
+Grounding should be evaluated empirically, not described as eliminating
+hallucinations.
 
-In this application, the uploaded study material acts as the primary
-knowledge source. Instead of asking the language model to answer solely
-from its general training, the application retrieves relevant passages
-and supplies them as context.
+## 4. Learner Model Approach
 
-The objective is to improve factual consistency, reduce unsupported
-claims, and help students verify explanations against their original
-material.
+### 4.1 Purpose
 
-## 3.2 Retrieval-Augmented Generation (RAG)
+The learner model is a lightweight, topic-wise performance tracker. Quiz
+outcomes are used to estimate which topics appear stronger or weaker and
+to show progress in the interface.
 
-The application follows a Retrieval-Augmented Generation (RAG) approach.
-
-RAG combines two processes:
-
--   **Retrieval:** Finds relevant information in the indexed study
-    material.
--   **Generation:** Uses a language model to produce a readable response
-    based on the retrieved information.
-
-The application performs semantic retrieval using embeddings and FAISS
-before calling the Groq API.
-
-### Grounding Pipeline
-
-``` text
-Student Question
-       |
-       v
-Question Embedding
-       |
-       v
-Semantic Search in FAISS
-       |
-       v
-Top-Ranked Study Passages
-       |
-       v
-Similarity Threshold
-       |
-       v
-Evidence Sufficiency Check
-       |
-       +---- Insufficient evidence
-       |             |
-       |             v
-       |      Decline to answer
-       |
-       +---- Sufficient evidence
-                     |
-                     v
-             Groq Language Model
-                     |
-                     v
-          Answer with Page References
-```
-
-## 3.3 Semantic Retrieval
-
-The application represents both the student's question and the stored
-text chunks as vectors. FAISS uses inner-product similarity to rank
-candidate passages.
-
-The current implementation uses a top-three retrieval setting and a
-similarity threshold of approximately `0.15`.
-
-The threshold is intended to filter out passages that are insufficiently
-similar to the question. Its effectiveness depends on the embedding
-model, text content, and score distribution, so it should be evaluated
-against representative questions rather than treated as a guarantee of
-relevance.
-
-## 3.4 Evidence Verification
-
-After retrieval, the application uses an evidence-verification step to
-assess whether the selected passages adequately support an answer.
-
-The verification logic distinguishes between:
-
--   **SUPPORTED:** The retrieved material provides sufficient support
-    for answering.
--   **INSUFFICIENT:** The retrieved material does not provide adequate
-    evidence.
-
-If the evidence is insufficient, the application is designed to avoid
-presenting an unsupported answer as though it were established by the
-uploaded material.
-
-This is an important safeguard because a language model can produce a
-plausible response even when the retrieved passages do not contain the
-required information.
-
-However, the verification step is itself AI-assisted. It can make
-mistakes, so it should be considered a safeguard rather than a formal
-proof that every generated claim is correct.
-
-## 3.5 Source-Page Citations
-
-The application preserves page numbers during PDF processing. These page
-numbers travel with the text chunks and are used when displaying answers
-and quiz explanations.
-
-Page references allow students to return to the original document and
-check the supporting information.
-
-For example, an answer may contain a reference in the form `[Page 4]`.
-
-A page citation indicates where supporting material was retrieved; it
-does not independently prove that every statement in the answer is
-correct. Citation accuracy and whether the cited passage actually
-supports the claim should be included in evaluation.
-
-## 3.6 Grounding in Quiz Generation
-
-Quiz generation also uses retrieved study material as its context. The
-model is instructed to avoid inventing facts, formulas, values, or
-answers that are not supported by the source.
-
-Each question is expected to include its source page and an explanation.
-The application validates required fields before displaying the quiz.
-
-For numerical questions, the expected answer and tolerance support
-automatic comparison with the student's response. The calculation itself
-should still be checked against the source material, because
-structurally valid generated questions can contain incorrect answers.
+It is not a complete cognitive model of knowledge and should not be
+described as Bayesian Knowledge Tracing or a validated measurement of
+mastery.
 
-## 3.7 Limitations of the Grounding Method
+### 4.2 Data and state
 
-The current approach has several limitations:
+The learner-progress workflow records correct answers and total attempts
+associated with topic labels. Its usefulness depends on questions being
+tagged with consistent, meaningful topic names.
 
-1.  **PDF text extraction:** Scanned PDFs and image-only diagrams may
-    not provide extractable text without OCR or dedicated image
-    processing.
-2.  **Retrieval misses:** Relevant information may not appear in the
-    top-ranked passages.
-3.  **Similarity threshold:** A fixed threshold may reject useful
-    passages or accept irrelevant ones.
-4.  **Evidence verification:** The verification model may incorrectly
-    judge whether evidence is sufficient.
-5.  **Citation limitations:** A page number can be present even when the
-    cited passage does not fully support the generated claim.
-6.  **Numerical correctness:** AI-generated calculations and answer keys
-    require validation.
-7.  **Multimodal limitations:** Text extraction and semantic search
-    alone do not establish that diagrams, images, or other non-textual
-    content have been interpreted correctly.
+The app uses Streamlit session state for active learner information.
+Without a persistent database or profile store, progress should be
+treated as session-scoped rather than guaranteed to survive across
+sessions, browsers, or devices.
 
-These limitations should be considered when evaluating the reliability
-of the tutor.
+### 4.3 Mastery estimate
 
-------------------------------------------------------------------------
+The documented learner-model calculation uses a smoothed proportion:
 
-# 4. Learner Model Approach
+\[ M = `\frac{c+1}{n+2}`{=tex}`\times 100`{=tex} \]
 
-## 4.1 Purpose
+where:
 
-The learner model maintains a lightweight estimate of the student's
-performance across topics. Its purpose is to help students identify
-areas where they may need more practice.
+-   `c` is the number of correct answers for a topic;
+-   `n` is the total number of attempts for that topic;
+-   `M` is the estimated mastery/performance score in percent.
 
-The model records quiz attempts and correct answers by topic. It then
-calculates an estimated mastery score and flags topics whose estimated
-mastery falls below a defined threshold.
+Adding 1 to the correct count and 2 to the attempt count smooths the
+estimate and reduces extreme values from very small samples.
 
-The current approach is a simple, smoothed performance model. It is not
-a full Bayesian Knowledge Tracing model.
+**Example:** Four correct answers from five attempts:
 
-## 4.2 Learner Data
+\[ M = `\frac{4+1}{5+2}`{=tex}`\times100`{=tex} `\approx 71.43`{=tex}%
+\]
 
-For each topic, the application maintains two principal values:
+This is a smoothed performance indicator, not proof that the learner has
+mastered exactly 71.43% of the topic.
 
-  Variable     Meaning
-  ------------ ---------------------------------------------------
-  `attempts`   Number of quiz questions attempted for that topic
-  `correct`    Number of correct answers recorded for that topic
+### 4.4 Weak-topic rule
 
-A simplified learner-state representation is:
+The documented threshold flags topics with estimated mastery below 60%:
 
-``` python
-learner_model = {
-    "Topic A": {
-        "attempts": 5,
-        "correct": 4
-    },
-    "Topic B": {
-        "attempts": 3,
-        "correct": 1
-    }
-}
-```
-
-This example illustrates the structure of the learner data; it is not a
-record of an actual student's performance.
-
-The application updates the learner state when a quiz is submitted. A
-guard prevents the same submitted quiz from being recorded multiple
-times during the same quiz session.
-
-## 4.3 Mastery Estimation
-
-The application uses a smoothed estimate based on the number of correct
-answers and total attempts.
-
-Let:
-
--   \(c\) = number of correct answers.
--   \(n\) = total number of attempts.
-
-The mastery score is calculated as:
-
-\[ M = `\frac{c+1}{n+2}`{=tex}`\times100`{=tex} \]
-
-The addition of 1 to the correct count and 2 to the attempt count
-provides a simple smoothing effect. It prevents the estimated mastery
-from being exactly 0% or 100% solely because of a very small number of
-attempts.
-
-For example, suppose a student attempts five questions and answers four
-correctly:
-
-\[ M = `\frac{4+1}{5+2}`{=tex}`\times100`{=tex} \]
-
-\[ M `\approx 71.43`{=tex}% \]
-
-The resulting value is an estimated performance score, not a direct
-measurement of the student's complete understanding.
-
-## 4.4 Weak-Topic Identification
-
-The application flags topics whose estimated mastery is below 60%.
-
-The decision rule is:
-
-\[ `\text{Weak Topic}`{=tex} =
+\[ `\text{Weak}`{=tex}(t)=
 ```{=tex}
 \begin{cases}
-\text{Yes}, & M < 60\%\\
-\text{No}, & M \geq 60\%
+\text{Yes}, & M_t < 60\%\\
+\text{No}, & M_t \geq 60\%
 \end{cases}
 ```
 \]
 
-For example, if a topic has one correct answer out of three attempts:
+The 60% threshold is a design choice, not a universal definition of
+mastery.
 
-\[ M = `\frac{1+1}{3+2}`{=tex}`\times100`{=tex} = 40% \]
+### 4.5 How it supports adaptation
 
-The topic is therefore flagged for revision.
+The intended learning loop is:
 
-This threshold is a configurable design choice rather than a universally
-established boundary between mastery and non-mastery.
+1.  The learner studies source material.
+2.  The learner answers quiz questions.
+3.  The application records outcomes against topics.
+4.  Topic-wise performance is summarized.
+5.  Weak topics are highlighted for review.
+6.  The learner can select topics for further study or practice.
 
-## 4.5 How the Learner Model Supports Adaptation
+This is a lightweight adaptive-support loop. Identifying a weak topic
+does not by itself mean every next activity is automatically optimized
+for that learner. Targeted quizzes or automatic revision recommendations
+should only be claimed to the extent that the corresponding workflow is
+implemented and tested.
 
-The learner model provides information that can support future
-personalized learning decisions.
+### 4.6 Limitations
 
-Its current role includes:
+-   **Small sample sizes:** a few questions cannot reliably establish
+    understanding.
+-   **Difficulty not calibrated:** the formula does not adjust for
+    question difficulty.
+-   **Topic-label fragmentation:** inconsistent labels can split
+    results.
+-   **No time decay:** the score does not inherently distinguish recent
+    from old attempts.
+-   **No formal knowledge tracing:** it does not estimate a hidden
+    knowledge state over time.
+-   **Session persistence:** history may not survive across sessions
+    without durable storage.
+-   **Limited causal evidence:** displaying weak topics does not prove
+    that learning outcomes improve.
 
-1.  Recording performance by topic.
-2.  Calculating estimated mastery.
-3.  Identifying topics below the mastery threshold.
-4.  Displaying learning progress to the student.
-5.  Providing information that can inform topic selection for further
-    practice.
+## 5. Evaluation and Testing
 
-For example, a student with a lower estimated mastery score in one topic
-can use the progress dashboard to identify that topic for revision and
-take another quiz.
+### 5.1 Functional tests
 
-The existence of a weak-topic score does not, by itself, mean that the
-application automatically constructs a complete personalized study plan.
-Such behaviour would need to be implemented and tested separately.
+-   Confirm PDF extraction and page metadata.
+-   Confirm video transcript chunks preserve available timestamps.
+-   Confirm all source types enter the same chunk collection.
+-   Confirm embeddings and the FAISS index are built successfully.
+-   Confirm topic discovery and tagging produce usable labels.
+-   Confirm retrieval returns relevant passages for representative
+    questions.
+-   Confirm quiz options, answers, and source IDs are validated.
+-   Confirm each quiz submission is recorded once, not duplicated by
+    Streamlit reruns.
 
-## 4.6 State Management and Limitations
+### 5.2 Grounding tests
 
-The current learner model uses Streamlit session state. This supports
-progress tracking during the active application session.
+Prepare questions with known supporting passages, including:
 
-Unless persistent storage is added, the model should not be described as
-a permanent learner profile across separate sessions or devices.
+-   questions answered directly by one passage;
+-   questions requiring multiple passages;
+-   questions whose answers are absent from the material;
+-   similar or easily confused concepts;
+-   formula, arithmetic, and unit questions;
+-   questions requiring PDF-page or video-timestamp attribution.
 
-Other limitations include:
+Evaluate retrieval relevance, answer correctness, groundedness, citation
+accuracy, and abstention when evidence is insufficient. Record measured
+results rather than assuming quality.
 
--   **Limited evidence:** A few quiz questions may not reliably
-    represent overall topic mastery.
--   **Question difficulty:** The current formula does not explicitly
-    account for differences in difficulty.
--   **Topic fragmentation:** Inconsistent AI-generated topic labels may
-    split performance across multiple entries.
--   **No learning-decay model:** The score does not account for how long
-    ago a student learned a concept.
--   **No formal knowledge tracing:** The model does not estimate the
-    probability of a hidden knowledge state using Bayesian Knowledge
-    Tracing.
--   **Limited adaptation:** Identifying a weak topic does not guarantee
-    that the next learning activity is automatically optimized for that
-    student.
+### 5.3 Learner-model tests
 
-These constraints make the learner model appropriate as a lightweight
-progress-tracking mechanism, while leaving room for more advanced
-personalization.
+Use known quiz outcomes to verify:
 
-------------------------------------------------------------------------
+-   the mastery formula produces expected scores;
+-   scores below 60% are flagged;
+-   scores at or above 60% are not flagged;
+-   attempts are recorded once;
+-   topic labels group questions as intended;
+-   dashboard totals match recorded outcomes.
 
-# 5. Evaluation Plan
+To establish educational benefit, a further study comparing performance
+before and after targeted revision would be needed.
 
-The system should be evaluated at three levels.
+## 6. Security and Operational Considerations
 
-## 5.1 Architecture and Functionality
+-   Store the Groq API key in Streamlit Secrets for deployment and in an
+    environment variable or local secrets file for development. Never
+    commit credentials to Git.
+-   Handle quota, network, transcript, and model-output failures with
+    clear messages.
+-   Treat transcript text as study content, not as trusted instructions.
+-   Avoid exposing secrets or sensitive error details in the UI.
+-   Use bounded retries and avoid repeatedly requesting captions while
+    YouTube is blocking access.
+-   Preserve source metadata through ingestion, retrieval, and display.
 
-Check that:
+## 7. Future Improvements
 
--   PDF text and page numbers are extracted correctly.
--   Text chunks and embeddings are created successfully.
--   Relevant passages are retrieved for representative questions.
--   Topic discovery and topic selection work as expected.
--   The quiz is generated and validated.
--   Quiz results are recorded only once per submission.
--   The progress dashboard displays the correct counts and mastery
-    estimates.
+1.  Add persistent learner profiles using a database.
+2.  Normalize topic names and map synonyms to stable topic IDs.
+3.  Evaluate chunk sizes, overlap, retrieval depth, and similarity
+    thresholds.
+4.  Improve abstention when the material does not support an answer.
+5.  Independently validate numerical answers and units.
+6.  Add OCR or image understanding for scanned PDFs and diagrams.
+7.  Add a resilient YouTube transcript fallback, such as manual
+    transcript upload or a separately configured provider.
+8.  Add adaptive difficulty and spaced revision after collecting
+    reliable learner data.
+9.  Compare learner outcomes with and without targeted revision.
+10. Maintain regression tests for source attribution, quiz validation,
+    and learner-statistics calculations.
 
-## 5.2 Grounding Quality
+## 8. Summary
 
-Prepare a small benchmark containing:
+The Adaptive AI Tutor combines multi-source ingestion, topic tagging,
+semantic embeddings, FAISS retrieval, Groq-powered generation, source
+attribution, quiz validation, and lightweight learner-performance
+tracking.
 
--   Questions directly answered by the uploaded material.
--   Questions requiring information from more than one passage.
--   Questions whose answers are absent from the material.
--   Questions involving formulas or numerical calculations.
--   Questions where similar concepts could lead to retrieval errors.
+Its grounding strategy retrieves evidence from study material,
+constrains generation to that evidence, validates model output, and
+preserves page or timestamp metadata. These measures reduce unsupported
+answers but do not eliminate the possibility of errors.
 
-Evaluate the application using measures such as:
+Its learner model summarizes topic-wise quiz performance using a
+smoothed score and flags topics below a configurable threshold. This
+provides useful revision signals but remains simpler than a persistent,
+validated knowledge-tracing system.
 
-  -----------------------------------------------------------------------
-  Measure                             What It Evaluates
-  ----------------------------------- -----------------------------------
-  Retrieval relevance                 Whether the retrieved passages are
-                                      relevant to the question
-
-  Answer correctness                  Whether the generated answer is
-                                      factually correct
-
-  Groundedness                        Whether claims are supported by the
-                                      retrieved material
-
-  Citation accuracy                   Whether cited pages contain the
-                                      supporting evidence
-
-  Abstention quality                  Whether unsupported questions are
-                                      correctly declined
-  -----------------------------------------------------------------------
-
-The benchmark should contain expected answers and supporting page
-references where possible. Results should be measured and reported
-rather than assumed.
-
-## 5.3 Learner-Model Evaluation
-
-Test the learner model using known combinations of attempts and correct
-answers. Verify that:
-
--   The mastery formula produces the expected score.
--   Topics below 60% are flagged.
--   Topics at or above 60% are not flagged.
--   Repeated rendering does not duplicate recorded attempts.
--   Performance is grouped under the intended topic names.
-
-To assess whether the model genuinely improves learning, a further study
-would be needed---for example, comparing students' performance before
-and after targeted revision.
-
-------------------------------------------------------------------------
-
-# 6. Future Improvements
-
-Potential extensions include:
-
-1.  **Persistent learner profiles:** Store progress in a database so it
-    remains available across sessions.
-2.  **Improved topic normalization:** Merge synonymous topic labels and
-    reduce fragmentation in learner statistics.
-3.  **Adaptive quiz difficulty:** Adjust question difficulty based on
-    previous performance.
-4.  **Spaced revision:** Recommend revisiting concepts after suitable
-    intervals.
-5.  **Stronger numerical validation:** Independently verify generated
-    calculations and answer keys.
-6.  **Improved retrieval:** Evaluate different chunk sizes, overlap
-    settings, and similarity thresholds.
-7.  **Diagram and image understanding:** Add OCR or multimodal
-    processing for image-based educational content.
-8.  **Formal evaluation:** Use a fixed test set and suitable metrics to
-    compare retrieval, answer quality, grounding, and abstention
-    behaviour.
-9.  **More advanced learner modelling:** Explore Bayesian Knowledge
-    Tracing or other knowledge-tracing approaches after collecting
-    sufficient interaction data.
-
-------------------------------------------------------------------------
-
-# 7. Conclusion
-
-The Adaptive AI Tutor combines semantic retrieval, evidence-aware answer
-generation, source-page references, quiz-based assessment, and
-lightweight learner progress tracking.
-
-Its grounding approach uses uploaded study material as context for
-generating answers, while the evidence-verification stage is designed to
-reduce unsupported responses. Its learner model estimates topic-wise
-mastery from quiz outcomes and highlights topics that may require
-revision.
-
-The current implementation provides a foundation for source-grounded and
-performance-aware learning. Its reliability and educational
-effectiveness should be established through systematic testing,
-especially for answer correctness, citation support, numerical question
-validity, and the usefulness of its mastery estimates.
+The key reliability task is systematic testing: verify that retrieved
+passages support answers, citations point to the right locations, quiz
+keys are correct, and learner statistics reflect actual attempts.
