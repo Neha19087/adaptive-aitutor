@@ -1,327 +1,144 @@
-# Adaptive AI Tutor --- Evaluation Results
-
-## 1. Evaluation Overview
-
-This section evaluates the Adaptive AI Tutor from two perspectives:
-
-1.  **Framework-based RAG evaluation:** A structured evaluation plan
-    using metrics commonly associated with RAGAS-style evaluation.
-2.  **Simulated student evaluation:** An illustrative
-    learner-performance analysis based on the team's 11-page
-    network/protocol study material.
-
-The study material includes concepts such as captured traffic, the
-fourth byte, message-type bytes, proxy fragmentation, and credential
-impact.
-
-> **Reporting note:** The topic-level scores listed in Section 3 were
-> observed in the app during a quiz run. The framework-based metric
-> values in Section 2 are explicitly marked as simulated examples for
-> report planning; they were not produced by an executed RAGAS,
-> DeepEval, or TruLens benchmark. Do not present them as measured
-> experimental results.
-
-------------------------------------------------------------------------
-
-## 2. Framework-Based Evaluation
-
-### 2.1 Metrics
-
-The following metrics are suitable for assessing a retrieval-augmented
-generation (RAG) tutor. RAGAS-style names are used as a reference for
-the evaluation design; no framework score is claimed to have been
-computed by the current application.
-
-  -----------------------------------------------------------------------
-  Metric                  What it evaluates       How to test it
-  ----------------------- ----------------------- -----------------------
-  Context Precision       Whether retrieved       Review the ranked
-                          passages are relevant   passages and mark
-                          to the question         relevant versus
-                                                  irrelevant chunks
-
-  Context Recall          Whether the retrieved   Compare retrieved
-                          passages contain the    chunks with the
-                          evidence needed for the passages identified by
-                          expected answer         a human evaluator as
-                                                  necessary
-
-  Faithfulness /          Whether answer claims   Break answers into
-  Groundedness            are supported by the    claims and check each
-                          retrieved context       claim against the
-                                                  supplied passages
-
-  Answer Relevancy        Whether the response    Have an evaluator rate
-                          answers the student's   whether the answer
-                          actual question         addresses the question
-                                                  directly
-
-  Citation Accuracy       Whether the cited page  Open the cited page and
-                          actually supports the   verify the claim
-                          associated claim        against the source
-
-  Abstention Quality      Whether the tutor       Ask questions that are
-                          declines to answer when intentionally
-                          the source lacks        unanswerable from the
-                          sufficient evidence     uploaded notes
-
-  Quiz Validity           Whether quiz questions, Compare each generated
-                          keys, explanations, and item with the source
-                          page references are     and independently check
-                          correct                 its answer
-  -----------------------------------------------------------------------
-
-### 2.2 Illustrative Simulated Results
-
-The following table is an **illustrative example only** showing how
-results could be reported after a small manual benchmark. These values
-are not measured results from the app and should be replaced with
-results from actual tests before final submission.
-
-  ------------------------------------------------------------------------
-  Metric                Illustrative simulated value Interpretation if
-                                                     confirmed by testing
-  --------------------- ---------------------------- ---------------------
-  Context Precision                             0.82 Most retrieved
-                                                     passages are relevant
-
-  Context Recall                                0.78 Retrieved passages
-                                                     cover most required
-                                                     evidence
-
-  Faithfulness /                                0.85 Most answer claims
-  Groundedness                                       are supported by the
-                                                     retrieved context
-
-  Answer Relevancy                              0.88 Responses generally
-                                                     address the question
-                                                     asked
-
-  Citation Accuracy                             0.80 Most checked
-                                                     citations point to
-                                                     supporting pages
-
-  Abstention Accuracy                           0.75 The tutor correctly
-                                                     handles most
-                                                     unsupported questions
-
-  Quiz Answer-Key                               0.80 Most checked
-  Accuracy                                           questions have a
-                                                     correct answer key
-  ------------------------------------------------------------------------
-
-**Interpretation:** If a real benchmark produced results in this range,
-it would suggest that the system is useful but still needs improvement
-in retrieval coverage, citations, unsupported-question handling, and
-quiz answer verification. These interpretations are conditional; the
-illustrative values do not establish that the current system achieves
-this performance.
-
-### 2.3 Recommended Benchmark Procedure
-
-Create a small benchmark from the team's course material. A practical
-initial set is 20 questions:
-
--   10 questions directly answerable from one passage.
--   4 questions requiring evidence from more than one passage.
--   3 questions whose answers are absent from the document.
--   3 questions involving protocol details or calculations that require
-    careful source verification.
-
-For every question, record:
+# Adaptive AI Tutor: Evaluation Report
 
--   The question.
--   The expected answer.
--   The required supporting page or pages.
--   The retrieved chunks.
--   The generated answer.
--   Whether the answer is supported.
--   Whether the cited page is correct.
--   Whether the system abstained when it should have.
+## 1. Objective
 
-Calculate a metric only after scoring the relevant examples. For
-example:
+This evaluation plan examines the Adaptive AI Tutor along two dimensions:
 
--   **Citation accuracy** = correct supporting citations / citations
-    checked.
--   **Abstention accuracy** = correctly handled unsupported questions /
-    unsupported questions tested.
--   **Quiz answer-key accuracy** = independently verified correct answer
-    keys / answer keys checked.
+1. **Retrieval-augmented generation (RAG):** whether answers are supported by the supplied learning material, whether they address the student's question, and whether retrieval returns relevant evidence.
+2. **Personalization:** whether the learner model changes its estimates of topic mastery over multiple practice sessions and how often students encounter repeated questions.
 
-For RAGAS or another evaluation framework, use the framework's own
-required input format and document the model and configuration used.
-Metric definitions and aggregation procedures can differ between
-framework versions.
+**Important status note:** The numerical values in the results tables below are illustrative, synthetic examples prepared to demonstrate how results can be reported. The RAGAS metrics have **not** been computed by running the project against a completed, verified test set. The personalization figures are from a synthetic simulation, not real student data or a live evaluation of the deployed application. Replace these values with actual outputs before describing them as experimental findings.
 
-------------------------------------------------------------------------
+## 2. System under evaluation
 
-## 3. Observed Application Results
+The tutor uses a retrieval-augmented generation workflow. Learning material is split into text chunks, embedded with a sentence-transformer model, and indexed for similarity search. The application uses a FAISS inner-product index with normalized embeddings, so similarity scores approximate cosine similarity. Retrieved chunks are supplied as context for answer generation.
 
-During the app run, a five-question quiz was generated and the
-quiz-scoring interface displayed per-answer explanations. The learner
-dashboard showed the following topic-level results:
+The source metadata retained by the application supports source labels such as PDF page numbers and video timestamps. The application can process PDF material and video-related content, including transcripts where available. YouTube transcript retrieval can depend on network and hosting conditions, so a transcript failure should be recorded as a source-ingestion limitation rather than treated as a retrieval-quality result.
 
-  Topic shown in dashboard      Correct / attempts   Displayed score
-  --------------------------- -------------------- -----------------
-  Proxy fragmentation                        1 / 1              100%
-  Message type byte                          0 / 1                0%
-  Credential impact                          0 / 1                0%
-  Fragmentation observation                  0 / 1                0%
+The learner model tracks topic-level correct answers and attempts. Its estimated mastery is:
 
-These are the recorded dashboard observations from the test run, not a
-large-scale evaluation.
+`mastery = (correct + 1) / (attempts + 2)`
 
-### 3.1 Interpretation
+A topic is classified as weak when its estimated mastery is below `0.60`. This is a simple smoothed estimate: it avoids assigning exactly 0 or 1 mastery from a very small number of attempts. The learner state described here is session-based; it should not be interpreted as persistent long-term learning progress unless persistence has been implemented and verified.
 
--   **Proxy fragmentation:** The learner answered the one recorded
-    question correctly.
--   **Message type byte:** The one recorded answer was incorrect,
-    suggesting that this concept may need review.
--   **Credential impact:** The one recorded answer was incorrect,
-    suggesting a possible learning gap.
--   **Fragmentation observation:** The one recorded answer was
-    incorrect, suggesting a possible learning gap.
+## 3. Evaluation design
 
-Each topic has only one recorded attempt. Therefore, these scores are
-preliminary indicators and are not sufficient to conclude that the
-learner has mastered or failed to master a topic.
+### 3.1 RAG test set
 
-The dashboard's displayed percentages may represent raw accuracy. If the
-implementation also uses the smoothed mastery formula described in the
-learner-model documentation, report the raw accuracy and smoothed
-estimate separately to avoid confusing the two.
+A suitable team-built test set should contain questions whose answers can be verified against known source locations. It should also contain questions that cannot be answered from the uploaded material.
 
-------------------------------------------------------------------------
+Recommended test categories:
 
-## 4. Simulated Student Results
+- **Direct factual questions:** answerable from one source chunk.
+- **Multi-step questions:** require combining evidence from multiple chunks.
+- **Off-material questions:** not answerable from the supplied course material.
+- **Source-attribution checks:** questions for which the expected PDF page or video timestamp is known.
 
-The following is a **simulated example** showing how the learner model
-could be evaluated with hypothetical students using the same course
-material. These are not actual student records or results from a
-completed experiment.
+For every test item, record:
 
-### 4.1 Hypothetical student performance
+- question;
+- tutor-generated answer;
+- retrieved context chunks;
+- reference answer;
+- reference context or source location;
+- question type;
+- whether the answer is supported by the material.
 
-  ----------------------------------------------------------------------------------
-  Simulated             Proxy Message type   Credential   Fragmentation        Total
-  learner       fragmentation         byte       impact     observation      correct
-  ----------- --------------- ------------ ------------ --------------- ------------
-  Learner A               1/1          1/1          1/1             1/1   4/4 (100%)
+The placeholder dataset supplied with the evaluation pack must be replaced with real questions, actual outputs from the tutor, and verified source references before it can support a valid evaluation.
 
-  Learner B               1/1          0/1          0/1             0/1    1/4 (25%)
+### 3.2 Metrics
 
-  Learner C               1/1          1/1          0/1             1/1    3/4 (75%)
-  ----------------------------------------------------------------------------------
+| Metric | What it checks | Desired interpretation |
+|---|---|---|
+| Faithfulness | Whether claims in the generated answer are supported by the retrieved context | Higher is better |
+| Answer relevancy | Whether the generated answer addresses the user's question | Higher is better |
+| Context precision | Whether retrieved chunks are relevant rather than distracting | Higher is better |
+| Context recall | Whether the retrieval includes the evidence needed to answer the question | Higher is better |
 
-In this hypothetical illustration, Learner A answers all four topic
-questions correctly, Learner B answers one correctly, and Learner C
-answers three correctly. The small four-question set demonstrates how
-topic-level performance can be represented, but it is too small to make
-reliable claims about learning outcomes.
+These metrics are not interchangeable. A relevant answer may still contain unsupported claims, and a faithful answer may be incomplete if retrieval omitted necessary evidence. Off-material questions should additionally be checked for appropriate abstention or a clear statement that the material does not contain the answer.
 
-### 4.2 Example of smoothed mastery
+## 4. RAG evaluation results
 
-The app's documented smoothed mastery estimate is:
+### 4.1 Illustrative example results — NOT measured
 
-\[ M = `\frac{c+1}{n+2}`{=tex}`\times100`{=tex} \]
+The following values are **synthetic placeholders for report formatting only**. They are not RAGAS outputs and must not be presented as measured performance.
 
-where (c) is the number of correct answers and (n) is the number of
-attempts for a topic.
+| Metric | Illustrative value |
+|---|---:|
+| Faithfulness | 0.88 |
+| Answer relevancy | 0.91 |
+| Context precision | 0.84 |
+| Context recall | 0.86 |
 
-For example, for a hypothetical topic with 1 correct answer out of 1
-attempt:
+### 4.2 Illustrative interpretation
 
-\[ M = `\frac{1+1}{1+2}`{=tex}`\times100`{=tex} `\approx 66.7`{=tex}% \]
+If a real evaluation produced values in this range, it would suggest that most generated claims were supported by retrieved evidence and that the answers generally addressed the questions. Context precision would be a useful place to investigate irrelevant chunks, while context recall would help identify cases where the retriever failed to return all the evidence required.
 
-For 0 correct answers out of 1 attempt:
+These interpretations are conditional examples only. Because the figures above have not been measured, they do **not** establish that the current application achieves this performance.
 
-\[ M = `\frac{0+1}{1+2}`{=tex}`\times100`{=tex} `\approx 33.3`{=tex}% \]
+### 4.3 Off-material questions
 
-This differs from raw accuracy, which would be 100% and 0%,
-respectively. If the dashboard displays 100% for a topic with one
-correct answer out of one attempt, it is likely displaying raw accuracy
-or another measure rather than this smoothed mastery estimate. Verify
-the actual dashboard calculation before describing it in the final
-report.
+Off-material questions are important because a tutor should not confidently invent course-specific facts when the uploaded sources do not contain the answer. During evaluation, record whether the tutor:
 
-### 4.3 What the simulated results demonstrate
+1. explicitly acknowledges that the answer is not present in the available material;
+2. avoids unsupported claims;
+3. distinguishes source-grounded information from general explanation; and
+4. avoids presenting a fabricated page number or timestamp.
 
-The hypothetical results illustrate how the tutor could:
+Report the count and percentage of off-material questions handled appropriately after testing. No measured abstention rate is claimed in this draft.
 
--   Track quiz performance by topic.
--   Distinguish stronger and weaker topics.
--   Highlight concepts for further revision.
--   Update topic estimates as more attempts are recorded.
+## 5. Personalization evaluation
 
-They do **not** demonstrate that the tutor improves exam performance,
-that its quiz questions are always correct, or that its mastery
-estimates are educationally validated. Those claims require additional
-testing with verified questions and, for learning-effectiveness claims,
-a suitable study design.
+### 5.1 Method
 
-------------------------------------------------------------------------
+A lightweight simulation can test whether the learner model updates its mastery estimates across practice sessions. Use several synthetic student profiles with different initial topic performance, then record answers and mastery after each session.
 
-## 5. Functional Checks Observed
+For each topic, the application uses:
 
-The following checks were reported as working during the app test:
+`mastery = (correct + 1) / (attempts + 2)`
 
-  -----------------------------------------------------------------------
-  Check                               Observed outcome
-  ----------------------------------- -----------------------------------
-  Quiz generation                     A five-question quiz was displayed
-                                      in a test run
+The weak-topic threshold is `mastery < 0.60`.
 
-  Answer submission and scoring       Worked during the observed test
+Two useful summary measures are:
 
-  Per-answer explanations and source  Displayed in the quiz interface
-  pages                               
+- **Mastery gain (percentage points):** final mastery estimate minus initial mastery estimate, multiplied by 100.
+- **Question repetition rate:** repeated question presentations divided by all question presentations, multiplied by 100. The implementation must define precisely what counts as a repeat—for example, the same question ID shown to the same profile more than once.
 
-  Learner progress dashboard          Displayed topic-level performance
+A rise in this smoothed mastery estimate indicates that the simulation recorded more correct answers relative to attempts. It does not, by itself, prove real learning gains or establish that personalization caused the improvement.
 
-  Weak-topic tracking                 Progress data was available for
-                                      identifying topics needing review
-  -----------------------------------------------------------------------
+### 5.2 Synthetic simulation results
 
-These are functional observations rather than a formal accuracy
-benchmark. They do not independently establish the correctness of every
-generated answer, the relevance of every retrieved passage, or the
-accuracy of every citation.
+The following are the illustrative outputs from the synthetic profile simulation prepared with the evaluation pack. They are **simulated data**, not observations from real learners and not evidence of a live classroom trial.
 
-------------------------------------------------------------------------
+| Synthetic profile | Illustrative mastery gain | Illustrative question repetition rate |
+|---|---:|---:|
+| Profile A | +15.77 percentage points | 41.67% |
+| Profile B | +17.38 percentage points | 41.67% |
+| Profile C | +9.52 percentage points | 25.00% |
+
+### 5.3 Interpretation of the simulation
+
+- The synthetic profiles show positive changes in their mastery estimates under the simulated answer schedules.
+- The profiles have different gains because their simulated starting states and answer histories differ.
+- Repetition rates vary across profiles, indicating that repeated-question exposure depends on the question schedule and the definition of a repeated item.
+- These figures demonstrate how the learner-model logic and reporting pipeline can be inspected. They do not demonstrate that real students improved, nor do they establish that the tutor's question selection is optimally personalized.
+
+For a stronger experiment, compare the adaptive question schedule against a non-adaptive baseline using the same simulated profiles and question bank. Keep the number of practice opportunities equal, record per-session mastery, and report the question-selection rules and repeat definition.
 
 ## 6. Limitations
 
-1.  **Small sample size:** The observed topic scores are based on one
-    attempt per topic.
-2.  **No completed framework benchmark:** RAGAS, DeepEval, or TruLens
-    metrics have not yet been measured for this run.
-3.  **AI-generated content:** Quiz questions and answer keys can contain
-    mistakes and require independent verification.
-4.  **Citation verification:** Displaying a page number does not
-    guarantee that the cited page supports the complete answer.
-5.  **Limited learner evidence:** A small quiz cannot reliably establish
-    a student's overall knowledge of a topic.
-6.  **Simulated learners:** Hypothetical learner rows are useful for
-    demonstrating the evaluation format but must not be represented as
-    real participants.
-7.  **Metric variability:** Scores depend on the questions, source
-    document, retrieval settings, evaluator, and metric implementation.
-
-------------------------------------------------------------------------
+1. The RAG metric values in Section 4 are illustrative only; a completed RAGAS run has not been verified.
+2. The provided test dataset contains placeholder examples until replaced with real, source-verified items.
+3. A valid evaluation requires actual tutor answers and actual retrieved chunks, not manually invented contexts.
+4. Synthetic profiles are useful for checking software behavior but are not a substitute for a user study.
+5. The mastery formula is a simple estimate based on correctness and attempt counts. It does not account for question difficulty, guessing, forgetting, or transfer to new questions.
+6. Repetition rate depends on the chosen definition of “repeated question” and should be calculated from a logged sequence of question IDs.
+7. Retrieval quality depends on chunking, embedding quality, the material uploaded, and source availability. Transcript-access failures should be reported separately.
+8. Source labels such as page numbers and timestamps should be verified against the original material.
 
 ## 7. Conclusion
 
-The initial app test demonstrated that the quiz interface, scoring,
-explanations, page references, and topic-level progress display can
-operate together. The observed dashboard results also show how the
-application records performance across concepts from the team's
-network/protocol study material.
+The system has an identifiable evaluation path for both RAG quality and personalization. RAG evaluation should use a verified test set containing answerable, multi-step, source-attribution, and off-material questions. Faithfulness, answer relevancy, context precision, and context recall provide complementary views of generation and retrieval quality.
 
-A formal evaluation remains necessary to quantify retrieval quality,
-groundedness, citation accuracy, abstention behaviour, and quiz
-answer-key correctness. The illustrative framework scores and simulated
-learner rows in this document are examples of reporting format, not
-experimentally measured results. Before submission, they should either
-be replaced with measured results or retained only when clearly labelled
-as simulations.
+The learner model provides a transparent baseline for adapting practice using topic-level correctness and attempt counts. Synthetic profile simulations can help verify the update logic and calculate mastery changes and repetition rates. However, the illustrative numbers in this report must not be interpreted as measured system performance. Actual RAGAS metrics require running the evaluation on real tutor outputs and verified references; real personalization claims require appropriately collected evaluation data.
+
