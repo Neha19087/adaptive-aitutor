@@ -4,3 +4,4 @@ numpy
 faiss-cpu
 groq
 sentence-transformers
+youtube-transcript-api

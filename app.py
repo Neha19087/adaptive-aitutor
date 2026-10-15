@@ -6,6 +6,8 @@ import faiss
 import os
 from groq import Groq
 from sentence_transformers import SentenceTransformer
+import re
+from urllib.parse import urlparse, parse_qs
 
 st.set_page_config(
     page_title="Adaptive AI Tutor",
@@ -351,6 +353,181 @@ def create_chunks(pdf_file, chunk_size=1000, overlap=1):
     return chunks
 
 
+def extract_youtube_id(url):
+    """Extract a YouTube video ID from a supported URL."""
+    parsed = urlparse(url.strip())
+
+    if parsed.hostname in ("youtu.be", "www.youtu.be"):
+        return parsed.path.strip("/").split("/")[0]
+
+    if parsed.hostname and parsed.hostname.endswith("youtube.com"):
+        if parsed.path == "/watch":
+            return parse_qs(parsed.query).get("v", [None])[0]
+
+        if parsed.path.startswith(("/embed/", "/shorts/")):
+            return parsed.path.split("/")[2]
+
+    return None
+
+
+def format_timestamp(seconds):
+    """Convert seconds to HH:MM:SS."""
+    seconds = int(seconds)
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    remaining = seconds % 60
+
+    return f"{hours:02d}:{minutes:02d}:{remaining:02d}"
+
+
+def get_source_label(chunk):
+    source_type = chunk.get("source_type", "pdf")
+    source_name = chunk.get("source_name", "")
+
+    if source_type in ("video", "youtube"):
+        timestamp = chunk.get("timestamp")
+
+        if timestamp:
+            return f"Video {source_name} at {timestamp}"
+
+        return f"Video {source_name}"
+
+    page = chunk.get("page")
+
+    if page is not None:
+        return f"Page {page}"
+
+    return "Unknown source"
+
+def transcribe_uploaded_video(video_file, video_name):
+    """Transcribe an uploaded video using Groq Whisper."""
+    api_key = os.getenv("GROQ_API_KEY")
+
+    if not api_key:
+        raise ValueError("GROQ_API_KEY is not configured.")
+
+    video_bytes = video_file.getvalue()
+
+    # Groq's transcription API has a file-size limit.
+    if len(video_bytes) > 25 * 1024 * 1024:
+        raise ValueError(
+            "This video exceeds the 25 MB upload limit for this "
+            "initial version. Try a smaller video."
+        )
+
+    client = Groq(api_key=api_key)
+
+    result = client.audio.transcriptions.create(
+        file=(video_name, video_bytes),
+        model="whisper-large-v3-turbo",
+        response_format="verbose_json",
+        timestamp_granularities=["segment"],
+    )
+
+    segments = getattr(result, "segments", None)
+
+    if not segments:
+        raise ValueError(
+            "No timestamped speech was returned. "
+            "Check that the video contains audible speech."
+        )
+
+    chunks = []
+
+    for segment in segments:
+        text = getattr(segment, "text", "").strip()
+
+        if not text:
+            continue
+
+        start = float(getattr(segment, "start", 0))
+        end = float(getattr(segment, "end", start))
+
+        chunks.append({
+            "text": text,
+            "page": None,
+            "source_type": "video",
+            "source_name": video_name,
+            "timestamp_start": start,
+            "timestamp_end": end,
+            "timestamp": format_timestamp(start),
+        })
+
+    if not chunks:
+        raise ValueError("The video transcript is empty.")
+
+    return chunks
+
+
+
+def get_youtube_transcript(url):
+    video_id = extract_youtube_id(url)
+
+    if not video_id:
+        raise ValueError(
+            "Invalid YouTube URL. Please paste a normal video link."
+        )
+
+    from youtube_transcript_api import YouTubeTranscriptApi
+
+    api = YouTubeTranscriptApi()
+
+    # Try English captions first, then other available languages.
+    try:
+        transcript = api.fetch(
+            video_id,
+            languages=["en"]
+        )
+    except Exception as english_error:
+        try:
+            transcript_list = api.list(video_id)
+
+            available = list(transcript_list)
+
+            if not available:
+                raise ValueError(
+                    "No captions are available for this video."
+                )
+
+            transcript = available[0].fetch()
+
+        except Exception as fallback_error:
+            raise ValueError(
+                "Could not fetch captions. The video may have "
+                "no accessible transcript, or YouTube may be "
+                f"blocking the request. Details: {fallback_error}"
+            ) from english_error
+
+    chunks = []
+
+    for item in transcript:
+        text = item.text.strip()
+
+        if not text:
+            continue
+
+        start = float(item.start)
+        duration = float(item.duration)
+
+        chunks.append({
+            "text": text,
+            "page": None,
+            "source_type": "youtube",
+            "source_name": url,
+            "timestamp_start": start,
+            "timestamp_end": start + duration,
+            "timestamp": format_timestamp(start)
+        })
+
+    if not chunks:
+        raise ValueError(
+            "The transcript was fetched, but it contained no usable text."
+        )
+
+    return chunks
+
+
+
 def call_groq_json(system_prompt, user_prompt):
     """Ask Groq for JSON and convert the response to Python data."""
     api_key = os.getenv("GROQ_API_KEY")
@@ -529,93 +706,88 @@ Return only valid JSON:
 
     return chunks
 
-def generate_quiz(chunks, number_of_questions=5, focus_topic=None):
-    context = ""
 
-    for chunk in chunks:
-        context += (
-            f"\n[Page {chunk['page']}]\n"
-            f"{chunk['text']}\n"
+def generate_quiz(chunks, number_of_questions=5, focus_topic=None):
+    """Generate concept-focused MCQs with verified source locations."""
+
+    if not chunks:
+        raise ValueError("No study material is available for the quiz.")
+
+    # Sample across the material instead of using only its beginning.
+    max_chunks = 20
+
+    if len(chunks) > max_chunks:
+        positions = np.linspace(
+            0, len(chunks) - 1, max_chunks, dtype=int
+        )
+        selected_chunks = [chunks[int(i)] for i in positions]
+    else:
+        selected_chunks = chunks
+
+    # Give each passage an ID. The model must cite this ID;
+    # Python will look up the real page or timestamp.
+    context_parts = []
+
+    for i, chunk in enumerate(selected_chunks):
+        context_parts.append(
+            f"\n[CHUNK_ID: {i}]\n"
+            f"[SOURCE: {get_source_label(chunk)}]\n"
+            f"[CONTENT:]\n{chunk['text']}\n"
         )
 
+    context = "\n".join(context_parts)
+
     system_prompt = """
-You are a careful quiz creator.
+You are an expert university-level question setter.
 
-Use ONLY the supplied study material. Do not invent facts,
-formulas, numerical values, or answers.
+Create challenging, useful questions that test understanding
+of the actual subject matter in the supplied study passages.
 
-Create exactly 5 questions.
+STRICT CONTENT RULES:
+- Use only the supplied study material.
+- Focus on important concepts, principles, definitions,
+  mechanisms, applications, comparisons, and cause-and-effect.
+- Prefer questions that require understanding or application,
+  not merely remembering isolated words.
+- Do not ask about the introduction, conclusion, speaker,
+  author, narration, video structure, or when something was said.
+- Never ask when or where a concept was mentioned.
+- Never ask about timestamps.
+- Avoid generic questions that could apply to any video.
+- Do not repeat the same concept in multiple questions.
+- Do not invent facts or use outside knowledge.
+- If the material does not support a meaningful question,
+  choose a different concept that is supported.
 
-PREFERRED FORMAT:
-- 3 MCQs
-- 1 short-answer question
-- 1 numerical question, if supported by the material.
+MCQ RULES:
+- Return exactly 5 MCQs.
+- Each question must have exactly 4 options.
+- Exactly one option must be correct.
+- Incorrect options should be plausible but contradicted by,
+  or inconsistent with, the supplied material.
+- Explain why the correct answer is supported by the material.
+- Use Easy, Medium, or Hard for difficulty.
+- Each question must have a topic.
+- Each question must cite one CHUNK_ID from the passages.
+- Choose the chunk that directly supports the answer.
+- Never invent a CHUNK_ID.
 
-FALLBACK FORMAT:
-If the supplied material is too limited to create a valid
-short-answer or numerical question, generate exactly 5 MCQs.
-
-Use the fallback format whenever the preferred balanced
-format cannot be created reliably.
-
-For every question:
-- Use ONLY the supplied study material.
-- Do not invent facts, formulas, values, or answers.
-- Ensure every question is answerable from the material.
-- For MCQs, provide exactly 4 options and one correct answer.
-- Include an explanation, source page, topic, and difficulty.
-
-For numerical questions, use only supported calculations.
-If no valid numerical question is possible, use the fallback.
-
-Every question must include:
-type, question, topic, explanation, page, difficulty.
-
-For MCQs, include:
-options (exactly four), correct_answer.
-
-For short-answer questions, include:
-reference_answer.
-
-For numerical questions, include:
-numeric_answer (a number), tolerance (a non-negative number),
-and unit (use an empty string if no unit applies).
-
-Use types exactly: mcq, short_answer, numerical.
-Use source page numbers from the supplied material.
-Difficulty must be Easy, Medium, or Hard.
-
-Return only valid JSON:
+Return ONLY valid JSON in this structure:
 {
   "questions": [
     {
       "type": "mcq",
-      "question": "Question text",
-      "topic": "Topic",
-      "options": ["A", "B", "C", "D"],
-      "correct_answer": "Exact correct option",
-      "explanation": "Source-supported explanation",
-      "page": 1,
-      "difficulty": "Easy"
-    },
-    {
-      "type": "short_answer",
-      "question": "Question text",
-      "topic": "Topic",
-      "reference_answer": "Expected answer",
-      "explanation": "Why this answer is expected",
-      "page": 1,
-      "difficulty": "Medium"
-    },
-    {
-      "type": "numerical",
-      "question": "Calculation question with all needed values",
-      "topic": "Topic",
-      "numeric_answer": 12.5,
-      "tolerance": 0.1,
-      "unit": "",
-      "explanation": "Steps and result supported by the material",
-      "page": 1,
+      "question": "A meaningful subject-focused question",
+      "topic": "Specific concept",
+      "options": [
+        "First option",
+        "Second option",
+        "Third option",
+        "Fourth option"
+      ],
+      "correct_answer": "Exact text of the correct option",
+      "explanation": "Why the correct answer follows from the source",
+      "source_chunk_id": 0,
       "difficulty": "Medium"
     }
   ]
@@ -623,11 +795,13 @@ Return only valid JSON:
 """
 
     user_prompt = (
-        f"Create exactly {number_of_questions} questions: "
-        "3 MCQs, 1 short answer, and 1 numerical question.\n"
+        f"Generate exactly {number_of_questions} MCQs.\n"
         f"Focus topic: {focus_topic or 'All topics'}.\n"
-        "Keep every question within the evidence in the material.\n\n"
-        f"Study material:\n{context}"
+        "Use the most important concepts in the supplied material. "
+        "Do not make questions about presentation or narration. "
+        "Use source_chunk_id to identify the passage supporting "
+        "each question.\n\n"
+        f"Study passages:\n{context}"
     )
 
     data = call_groq_json(system_prompt, user_prompt)
@@ -636,55 +810,60 @@ Return only valid JSON:
     if len(questions) != number_of_questions:
         raise ValueError(
             f"Expected {number_of_questions} questions, "
-            f"but received {len(questions)}. "
-            f"Received question types: "
-            f"{[q.get('type', 'missing') for q in questions]}"
+            f"but received {len(questions)}."
         )
-    types = [q.get("type") for q in questions]
-    
-    balanced_quiz = (
-        types.count("mcq") == 3
-        and types.count("short_answer") == 1
-        and types.count("numerical") == 1
-    )
 
-    mcq_fallback = all(
-        question_type == "mcq"
-        for question_type in types
-    )
-
-    if not balanced_quiz and not mcq_fallback:
-        raise ValueError(
-            "Quiz must contain either 3 MCQs, 1 short-answer "
-            "and 1 numerical question, or exactly 5 MCQs."
-        )
     for q in questions:
-        if not all(q.get(k) for k in ["question", "topic", "explanation"]):
+        if q.get("type") != "mcq":
+            raise ValueError("The quiz must contain only MCQs.")
+
+        if not all(
+            q.get(field)
+            for field in ["question", "topic", "explanation"]
+        ):
             raise ValueError("A question is missing required information.")
 
-        if not isinstance(q.get("page"), int):
-            raise ValueError("A question is missing its source page.")
+        options = q.get("options", [])
 
-        if q["type"] == "mcq":
-            if (
-                len(q.get("options", [])) != 4
-                or q.get("correct_answer") not in q.get("options", [])
-            ):
-                raise ValueError("An MCQ has invalid options or answer.")
+        if (
+            not isinstance(options, list)
+            or len(options) != 4
+            or not all(isinstance(option, str) for option in options)
+            or len(set(options)) != 4
+            or q.get("correct_answer") not in options
+        ):
+            raise ValueError("An MCQ has invalid options or answer.")
 
-        elif q["type"] == "short_answer":
-            if not q.get("reference_answer"):
-                raise ValueError("A short-answer question has no reference answer.")
+        source_id = q.get("source_chunk_id")
 
-        elif q["type"] == "numerical":
-            if not isinstance(q.get("numeric_answer"), (int, float)):
-                raise ValueError("The numerical answer is not a number.")
-            if not isinstance(q.get("tolerance"), (int, float)):
-                raise ValueError("The numerical tolerance is invalid.")
-            if q["tolerance"] < 0:
-                raise ValueError("The numerical tolerance cannot be negative.")
+        if (
+            not isinstance(source_id, int)
+            or isinstance(source_id, bool)
+            or source_id < 0
+            or source_id >= len(selected_chunks)
+        ):
+            raise ValueError("A question has an invalid source passage.")
+
+        # Assign source metadata from the real chunk, not from the AI.
+        source_chunk = selected_chunks[source_id]
+
+        q["page"] = source_chunk.get("page")
+        q["timestamp"] = source_chunk.get("timestamp")
+        q["source_type"] = source_chunk.get("source_type", "pdf")
+        q["source_name"] = source_chunk.get("source_name", "")
+
+        q["difficulty"] = q.get("difficulty", "Medium")
+
+        if q["difficulty"] not in ("Easy", "Medium", "Hard"):
+            q["difficulty"] = "Medium"
+
+        if q["page"] is None and not q["timestamp"]:
+            raise ValueError(
+                "The selected source passage has no page or timestamp."
+            )
 
     return questions
+
 
 def grade_short_answer(question, student_answer, reference_answer, source_text):
     system_prompt = """
@@ -729,13 +908,17 @@ Decide whether the student's answer captures the essential meaning.
 def verify_evidence(question, retrieved_chunks):
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
+    
     context = ""
 
     for i, chunk in enumerate(retrieved_chunks, start=1):
+        source = get_source_label(chunk)
+
         context += (
-            f"\nPassage {i} | Page {chunk['page']}\n"
+            f"\nPassage {i} | Source: {source}\n"
             f"{chunk['text']}\n"
         )
+
 
     response = client.chat.completions.create(
         model="openai/gpt-oss-120b",
@@ -782,13 +965,17 @@ Then give a brief explanation.
 def generate_answer(question, retrieved_chunks):
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
+    
     context = ""
 
     for chunk in retrieved_chunks:
+        source = get_source_label(chunk)
+
         context += (
-            f"\n[Page {chunk['page']}]\n"
+            f"\n[Source: {source}]\n"
             f"{chunk['text']}\n"
         )
+
 
     response = client.chat.completions.create(
         model="openai/gpt-oss-120b",
@@ -800,7 +987,10 @@ You are a helpful study tutor.
 
 Answer using only the supplied study passages.
 Explain concepts clearly and in simple language.
-Cite supporting pages using [Page N].
+Cite each claim using the exact source label provided in the passages.
+For PDF sources, use [Page N].
+For video and YouTube sources, use [Video HH:MM:SS].
+Never write [Page None] or invent a source citation.
 
 Do not invent facts or claim that a page supports
 something unless that page contains the evidence.
@@ -906,85 +1096,204 @@ if page == "Dashboard":
 if page == "Study Material & AI Tutor":
     st.subheader("📂 Your Study Material")
     st.write(
-        "Start by uploading a PDF containing your notes "
+        "Start by uploading a PDF or video link containing your notes "
         "or course material."
     )
 
+    
+    st.subheader("📚 Add Your Learning Material")
+
     uploaded_file = st.file_uploader(
-        "Choose your study material",
+        "Upload PDF notes",
         type=["pdf"],
-        help="Upload a PDF with selectable text."
+        key="pdf_upload",
+    )
+
+    uploaded_videos = st.file_uploader(
+        "Upload video lectures",
+        type=["mp4", "webm", "mpeg", "mpg"],
+        accept_multiple_files=True,
+        key="video_upload",
+    )
+
+    youtube_url = st.text_input(
+        "Or paste a YouTube lecture URL",
+        placeholder="https://www.youtube.com/watch?v=...",
+        key="youtube_url",
+    )
+
+    st.caption(
+        "You can combine PDF notes, uploaded videos, "
+        "and a YouTube lecture in one knowledge base."
     )
 
 
-    if uploaded_file is not None:
 
-        if st.button("Build searchable knowledge base"):
+    
+    if st.button("Build searchable knowledge base"):
 
-            with st.spinner("Reading PDF and creating embeddings..."):
+        all_chunks = []
+        source_errors = []
 
-                chunks = create_chunks(uploaded_file.getvalue())
-
-                if not chunks:
-                    st.error(
-                        "No selectable text found in this PDF."
+        # 1. Read PDF notes, if provided
+        if uploaded_file is not None:
+            with st.spinner("Reading PDF notes..."):
+                try:
+                    pdf_chunks = create_chunks(
+                        uploaded_file.getvalue()
                     )
-                    st.stop()
 
-                
-                with st.spinner("Discovering major topics and subtopics..."):
-                    topic_hierarchy = discover_topic_hierarchy(chunks)
+                    for chunk in pdf_chunks:
+                        chunk["source_type"] = "pdf"
+                        chunk["source_name"] = uploaded_file.name
+                        chunk["timestamp"] = None
 
-                with st.spinner("Tagging each content chunk..."):
-                    chunks = tag_content_chunks(chunks, topic_hierarchy)
+                    all_chunks.extend(pdf_chunks)
 
-                st.session_state["topic_hierarchy"] = topic_hierarchy
-                st.session_state["chunks"] = chunks
+                    if not pdf_chunks:
+                        source_errors.append(
+                            f"No selectable text found in {uploaded_file.name}"
+                        )
 
-                st.success(
-                    f"Topic discovery complete! "
-                    f"Tagged {len(chunks)} content chunks."
-                )
+                except Exception as e:
+                    source_errors.append(
+                        f"Could not read PDF: {e}"
+                    )
 
+        # 2. Transcribe uploaded video lectures
+        for video_file in uploaded_videos:
+            with st.spinner(
+                f"Transcribing {video_file.name}..."
+            ):
+                try:
+                    video_chunks = transcribe_uploaded_video(
+                        video_file,
+                        video_file.name
+                    )
+                    all_chunks.extend(video_chunks)
 
-                model = load_embedding_model()
+                except Exception as e:
+                    source_errors.append(
+                        f"Could not process {video_file.name}: {e}"
+                    )
 
-                texts = [chunk["text"] for chunk in chunks]
+        # 3. Fetch a YouTube transcript, if a URL was provided
+        if youtube_url.strip():
+            with st.spinner("Fetching YouTube transcript..."):
+                try:
+                    youtube_chunks = get_youtube_transcript(
+                        youtube_url.strip()
+                    )
+                    all_chunks.extend(youtube_chunks)
 
-                embeddings = model.encode(
-                    texts,
-                    normalize_embeddings=True,
-                    convert_to_numpy=True
-                )
+                except Exception as e:
+                    source_errors.append(
+                        f"Could not process YouTube URL: {e}"
+                    )
 
-                embeddings = np.asarray(
-                    embeddings,
-                    dtype="float32"
-                )
+        # Display source errors without hiding successful sources
+        for error in source_errors:
+            st.warning(error)
 
-                # Inner product on normalized vectors
-                # is equivalent to cosine similarity.
-                index = faiss.IndexFlatIP(
-                    embeddings.shape[1]
-                )
+        # Stop if no source produced usable text
+        if not all_chunks:
+            st.error(
+                "No usable learning material was found. "
+                "Upload a readable PDF or video, or provide "
+                "a YouTube URL with available captions."
+            )
+            st.stop()
 
-                index.add(embeddings)
-
-                st.session_state["chunks"] = chunks
-                st.session_state["index"] = index
-
-            st.success(
-                f"Knowledge base ready: {len(chunks)} chunks."
+        # 4. Discover topics across ALL uploaded sources
+        with st.spinner(
+            "Discovering major topics and subtopics..."
+        ):
+            topic_hierarchy = discover_topic_hierarchy(
+                all_chunks
             )
 
-        if "index" in st.session_state:
-
-            question = st.text_input(
-                "Ask a question about your notes",
-                placeholder="What is the main idea of this document?"
+        # 5. Tag every PDF and video transcript chunk
+        with st.spinner("Tagging each content chunk..."):
+            all_chunks = tag_content_chunks(
+                all_chunks,
+                topic_hierarchy
             )
 
-            if st.button("Find relevant passages") and question.strip():
+        st.session_state["topic_hierarchy"] = topic_hierarchy
+        st.session_state["chunks"] = all_chunks
+
+        # 6. Create embeddings
+        with st.spinner(
+            "Creating embeddings and searchable index..."
+        ):
+            model = load_embedding_model()
+
+            texts = [
+                chunk["text"] for chunk in all_chunks
+            ]
+
+            embeddings = model.encode(
+                texts,
+                normalize_embeddings=True,
+                convert_to_numpy=True
+            )
+
+            embeddings = np.asarray(
+                embeddings,
+                dtype="float32"
+            )
+
+            # Normalized vectors + inner product = cosine similarity
+            index = faiss.IndexFlatIP(
+                embeddings.shape[1]
+            )
+
+            index.add(embeddings)
+
+            st.session_state["index"] = index
+
+        st.success(
+            f"Knowledge base ready! Indexed "
+            f"{len(all_chunks)} text chunks."
+        )
+
+        st.write("Sources successfully added:")
+
+        pdf_count = sum(
+            1 for c in all_chunks
+            if c.get("source_type") == "pdf"
+        )
+
+        video_count = sum(
+            1 for c in all_chunks
+            if c.get("source_type") == "video"
+        )
+
+        youtube_count = sum(
+            1 for c in all_chunks
+            if c.get("source_type") == "youtube"
+        )
+
+        st.write(f"- PDF chunks: {pdf_count}")
+        st.write(f"- Uploaded video chunks: {video_count}")
+        st.write(f"- YouTube transcript chunks: {youtube_count}")
+
+
+    if "index" in st.session_state and "chunks" in st.session_state:
+        chunks = st.session_state["chunks"]
+        index = st.session_state["index"]
+
+        st.write(
+            f"Knowledge base ready: {len(chunks)} chunks."
+        )     
+
+        question = st.text_input(
+            "Ask a question about your notes",
+            placeholder="What is the main idea of this material?"
+        )
+
+
+        if st.button("Find relevant passages") and question.strip():
 
                 model = load_embedding_model()
 
@@ -1141,7 +1450,7 @@ if page == "Practice Quiz":
                 try:
                     with st.spinner("Generating your balanced quiz..."):
                         questions = generate_quiz(
-                            quiz_chunks[:8],
+                            quiz_chunks,
                             number_of_questions=5,
                             focus_topic=(
                                 None if selected_quiz_topic == "All topics"
@@ -1167,11 +1476,18 @@ if page == "Practice Quiz":
             for i, q in enumerate(questions):
                 st.subheader(f"Question {i + 1}")
                 st.write(q["question"])
+                source_label = (
+                    f"Page {q['page']}"
+                    if q.get("page") is not None
+                    else f"Video {q.get('timestamp', 'timestamp unavailable')}"
+                )
+
                 st.caption(
                     f"Type: {q['type'].replace('_', ' ').title()} | "
                     f"Difficulty: {q['difficulty']} | "
-                    f"Source: Page {q['page']}"
+                    f"Source: {source_label}"
                 )
+                
 
                 if q["type"] == "mcq":
                     st.radio(
@@ -1303,7 +1619,14 @@ if page == "Practice Quiz":
                     st.write(f"Expected answer: {expected} {unit}".strip())
 
                 st.write("Explanation:", q["explanation"])
-                st.caption(f"Review source: Page {q['page']}")
+                
+                source_label = (
+                    f"Page {q['page']}"
+                    if q.get("page") is not None
+                    else f"Video at {q.get('timestamp', 'timestamp unavailable')}"
+                )
+                st.caption(f"Review source: {source_label}")
+
                 st.divider()
 
             st.metric("Your Score", f"{st.session_state['quiz_score']} / {len(questions)}")
